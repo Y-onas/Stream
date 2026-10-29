@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+.sessions/
+*.session
+*.session.*
+*.session.json
+*.session.json.*
+.session-*
+.tools/
+bin/
+*.exe
+*.test
+*.log
+coverage.out
