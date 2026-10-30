@@ -8,6 +8,9 @@ import (
 )
 
 type FetchPage func(context.Context, int, int) ([]tg.MessageClass, error)
+
+var ErrMessageMissing = errors.New("message not found in the selected source; it may be deleted or inaccessible")
+
 type Progress struct {
 	Inspected  int
 	NextOffset int
@@ -89,5 +92,5 @@ func Inspect(ctx context.Context, fetch FetchPage, id int) (tg.MessageClass, err
 			}
 		}
 	}
-	return nil, errors.New("message not found in the selected source; it may be deleted or inaccessible")
+	return nil, ErrMessageMissing
 }

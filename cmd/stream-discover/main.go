@@ -19,6 +19,7 @@ import (
 	"streamweb/internal/config"
 	"streamweb/internal/discovery"
 	"streamweb/internal/media"
+	"streamweb/internal/streaming"
 	login "streamweb/internal/telegram"
 )
 
@@ -30,28 +31,48 @@ func main() {
 }
 
 func run() error {
-	mode := flag.String("mode", "discover", "discover, list, inspect, or find")
+	mode := flag.String("mode", "discover", "discover, list, inspect, find, or serve")
 	name := flag.String("source", "Stream Test", "exact source display name (case-insensitive)")
 	pageSize := flag.Int("page-size", 50, "messages per API request (1..100)")
 	max := flag.Int("max", 100, "maximum messages inspected")
 	offset := flag.Int("offset-id", 0, "inspect messages older than this ID; 0 starts at newest")
-	id := flag.Int("message-id", 0, "message ID for inspect mode")
+	id := flag.Int("message-id", 0, "message ID for inspect or serve mode")
+	address := flag.String("listen", "127.0.0.1:8080", "development-only numeric loopback address")
+	chunk := flag.Int("chunk-size", 262144, "Telegram part bytes: power of two, 4096..1048576")
+	concurrency := flag.Int("concurrency", 2, "maximum active stream requests (1..8)")
+	partTimeout := flag.Duration("part-timeout", 20*time.Second, "deadline per Telegram part, including retries")
+	requestTimeout := flag.Duration("request-timeout", 30*time.Minute, "maximum duration of an HTTP stream request")
+	verify := flag.Bool("verify-stream", false, "with serve: run bounded live HTTP/Telegram byte comparisons, then exit")
 	sessionPath := flag.String("session", ".sessions/telegram.session.json", "session file in a dedicated private directory")
 	envPath := flag.String("env", ".env", "local dotenv file")
-	timeout := flag.Duration("timeout", 5*time.Minute, "total operation timeout including login")
+	timeout := flag.Duration("timeout", 5*time.Minute, "discovery or server initialization timeout including login")
 	check := flag.Bool("check-config", false, "validate configuration without contacting Telegram")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		return errors.New("unexpected positional arguments; use -help for flags")
 	}
-	if *mode != "discover" && *mode != "list" && *mode != "inspect" && *mode != "find" {
-		return errors.New("mode must be discover, list, inspect, or find")
+	if *mode != "discover" && *mode != "list" && *mode != "inspect" && *mode != "find" && *mode != "serve" {
+		return errors.New("mode must be discover, list, inspect, find, or serve")
 	}
 	if *pageSize < 1 || *pageSize > 100 || *max < 1 || *offset < 0 || int64(*offset) > 2147483647 || *timeout <= 0 || strings.TrimSpace(*name) == "" {
 		return errors.New("use page-size 1..100, positive max and timeout, nonnegative 32-bit offset-id, and a nonempty source name")
 	}
-	if *mode == "inspect" && (*id <= 0 || int64(*id) >= 2147483647) {
-		return errors.New("inspect requires -message-id between 1 and 2147483646")
+	if (*mode == "inspect" || *mode == "serve") && (*id <= 0 || int64(*id) >= 2147483647) {
+		return errors.New("inspect and serve require -message-id between 1 and 2147483646")
+	}
+	if *verify && *mode != "serve" {
+		return errors.New("-verify-stream requires -mode serve")
+	}
+	if *mode == "serve" {
+		if err := streaming.ValidateAddress(*address); err != nil {
+			return err
+		}
+		if err := streaming.ValidateChunk(*chunk); err != nil {
+			return err
+		}
+		if *concurrency < 1 || *concurrency > 8 || *partTimeout <= 0 || *requestTimeout <= 0 {
+			return errors.New("use concurrency 1..8 and positive streaming timeouts")
+		}
 	}
 	cfg, err := config.Load(*envPath)
 	if err != nil {
@@ -67,17 +88,22 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	ctx, cancel := context.WithTimeout(ctx, *timeout)
-	defer cancel()
-	client := telegram.NewClient(cfg.APIID, cfg.APIHash, telegram.Options{SessionStorage: storage, NoUpdates: true})
+	if *mode != "serve" {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, *timeout)
+		defer cancel()
+	}
+	client := telegram.NewClient(cfg.APIID, cfg.APIHash, telegram.Options{SessionStorage: storage, NoUpdates: true, OnTransfer: login.SerialTransfers()})
 	fmt.Fprintln(os.Stderr, "Reusing the saved session if authorized. First login prompts for phone, code, and optional two-step password in this terminal.")
 	var operationErr error
 	err = client.Run(ctx, func(ctx context.Context) (result error) {
 		defer func() { operationErr = result }()
-		if err := client.Auth().IfNecessary(ctx, auth.NewFlow(login.Terminal{}, auth.SendCodeOptions{})); err != nil {
+		setupCtx, cancelSetup := context.WithTimeout(ctx, *timeout)
+		defer cancelSetup()
+		if err := client.Auth().IfNecessary(setupCtx, auth.NewFlow(login.Terminal{}, auth.SendCodeOptions{})); err != nil {
 			return fmt.Errorf("authentication: %s", login.Explain(err))
 		}
-		status, err := client.Auth().Status(ctx)
+		status, err := client.Auth().Status(setupCtx)
 		if err != nil {
 			return fmt.Errorf("verify authentication: %s", login.Explain(err))
 		}
@@ -85,7 +111,7 @@ func run() error {
 			return errors.New("Telegram authentication was not authorized")
 		}
 		fmt.Println("Telegram authentication: successful")
-		matches, err := discovery.Find(ctx, client.API(), *name)
+		matches, err := discovery.Find(setupCtx, client.API(), *name)
 		if errors.Is(err, discovery.ErrSourceMissing) {
 			return err
 		}
@@ -97,6 +123,10 @@ func run() error {
 			return err
 		}
 		fmt.Printf("Source: %q\nSource type: %s\nSource ID: %d\n", source.Info.Name, source.Info.Kind, source.Info.ID)
+		if *mode == "serve" {
+			cancelSetup()
+			return serve(ctx, client, source, serveOptions{address: *address, messageID: *id, chunk: *chunk, concurrency: *concurrency, setupTimeout: *timeout, partTimeout: *partTimeout, requestTimeout: *requestTimeout, verify: *verify})
+		}
 		fetch := discovery.History(client.API(), source)
 		// A real history request confirms read access, including for find mode.
 		if *mode == "find" {
