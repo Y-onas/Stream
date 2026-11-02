@@ -12,7 +12,9 @@ export async function importCatalogue(db,catalogue,now=new Date()){
     operations.push(db.video.upsert({where:{id:item.id},create:{id:item.id,...data},update:data}));
   }
   for(let offset=0;offset<operations.length;offset+=50)await db.$transaction(operations.slice(offset,offset+50));
-  if(catalogue.sync?.initialComplete)await db.video.updateMany({where:{id:{notIn:valid.map(v=>v.id)},available:true},data:{available:false}});
+  // Rejected metadata is not evidence of deletion. Reconcile removals only from
+  // a complete, fully validated snapshot; valid upserts still proceed above.
+  if(catalogue.sync?.initialComplete&&valid.length===catalogue.items.length)await db.video.updateMany({where:{id:{notIn:valid.map(v=>v.id)},available:true},data:{available:false}});
   return valid.length;
 }
 export function startCatalogueSync({db,streamOrigin,streamToken,fetcher=fetch,interval=15000,inspect=inspectDuration}){

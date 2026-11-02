@@ -33,6 +33,6 @@ function App(){
   else content=<Empty title="Page not found"><Link to="/">Return home</Link></Empty>;
   if(path==='/saved'&&(account.loading||!account.user))content=<AccountRequired/>;
   if(account.platform?.maintenanceMode)content=<div className="purchase-page"><p className="eyebrow">{account.platform.platformName}</p><h1>Maintenance</h1><p className="muted">{account.platform.maintenanceMessage}</p></div>;
-  return <Shell path={path} query={query} setQuery={setQuery}>{account.libraryError&&account.user&&<p className="form-error account-library-error" role="alert">{account.libraryError}</p>}{content}</Shell>;
+  return <Shell path={path} query={query} setQuery={setQuery}>{account.logoutWarning&&<p className="form-error account-library-error" role="alert">{account.logoutWarning}</p>}{account.libraryError&&account.user&&<p className="form-error account-library-error" role="alert">{account.libraryError}</p>}{content}</Shell>;
 }
 createRoot(document.getElementById('root')).render(<React.StrictMode><AccountProvider><App/></AccountProvider></React.StrictMode>);

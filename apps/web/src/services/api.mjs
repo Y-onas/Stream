@@ -20,3 +20,7 @@ export async function cacheMessage(options){
     navigator.serviceWorker.controller.postMessage({type:options?'CACHE_CONFIG':'CACHE_STATUS',options},[channel.port2]);
   });
 }
+export async function clearCacheAfterLogout(){
+  try{if((await cacheMessage({enabled:false,clear:true}))?.ok===true)return ''; }catch{/* Account logout has already succeeded; report cleanup separately. */}
+  return "You're signed out, but cached video data could not be cleared. Some video data may remain on this device. Clear this site's storage in your browser settings.";
+}

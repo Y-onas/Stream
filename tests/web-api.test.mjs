@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {api} from '../apps/web/src/services/api.mjs';
+import {api,clearCacheAfterLogout} from '../apps/web/src/services/api.mjs';
 
 const fallback='Something went wrong. Please try again.';
 
@@ -51,4 +51,34 @@ test('successful JSON responses still update and clear the CSRF token',async t=>
   assert.equal(calls[1].options.headers['X-CSRF-Token'],'test-csrf-token');assert.equal(calls[1].options.headers['Content-Type'],'application/json');assert.deepEqual(JSON.parse(calls[1].options.body),{selected:true});
   await api('/auth/me');await api('/videos');
   assert.equal(calls[3].options.headers['X-CSRF-Token'],undefined);
+});
+
+function browserStorage(t,navigator){
+  const descriptor=Object.getOwnPropertyDescriptor(globalThis,'navigator');
+  Object.defineProperty(globalThis,'navigator',{configurable:true,value:navigator});
+  t.after(()=>{if(descriptor)Object.defineProperty(globalThis,'navigator',descriptor);else delete globalThis.navigator;});
+}
+
+test('logout cleanup checks the worker acknowledgement and requests clearing plus disabling',async t=>{
+  for(const result of [{ok:true},{ok:false,message:'Storage unavailable'},null]){
+    await t.test(JSON.stringify(result),async t=>{
+      browserStorage(t,{serviceWorker:{controller:{postMessage(message,ports){
+        assert.deepEqual(message,{type:'CACHE_CONFIG',options:{enabled:false,clear:true}});
+        ports[0].postMessage(result);ports[0].close();
+      }}}});
+      const warning=await clearCacheAfterLogout();
+      if(result?.ok===true)assert.equal(warning,'');
+      else{assert.match(warning,/You're signed out/);assert.match(warning,/video data may remain/);assert.match(warning,/browser settings/);}
+    });
+  }
+});
+
+test('logout cleanup reports a missing worker without rejecting successful logout',async t=>{
+  browserStorage(t,{});
+  assert.match(await clearCacheAfterLogout(),/You're signed out, but cached video data could not be cleared/);
+});
+
+test('logout cleanup reports storage access errors without rejecting successful logout',async t=>{
+  browserStorage(t,{get serviceWorker(){throw new DOMException('Blocked','SecurityError');}});
+  assert.match(await clearCacheAfterLogout(),/You're signed out, but cached video data could not be cleared/);
 });
