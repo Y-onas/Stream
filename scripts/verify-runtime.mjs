@@ -1,0 +1,18 @@
+import {readFile,writeFile} from 'node:fs/promises';
+const settings=JSON.parse(await readFile(new URL('../.local/runtime.json',import.meta.url),'utf8'));
+const publicRoot=process.env.VERIFY_WEB_ORIGIN||'http://127.0.0.1:5173';
+const catalogue=await (await fetch(publicRoot+'/api/videos')).json();
+if(!catalogue.sync?.initialComplete||!catalogue.items?.length)throw Error('Initial sync is incomplete or catalogue is empty');
+const video=[...catalogue.items].sort((a,b)=>a.sizeBytes-b.sizeBytes)[0];
+const url=publicRoot+`/api/videos/${video.id}/stream`;
+const head=await fetch(url,{method:'HEAD'});
+if(!head.ok||Number(head.headers.get('content-length'))!==video.sizeBytes)throw Error('Live HEAD mismatch');
+const part=await fetch(url,{headers:{Range:'bytes=0-1023'}}),data=new Uint8Array(await part.arrayBuffer());
+const reference=await fetch(settings.streamOrigin+`/internal/videos/${video.id}/stream`,{headers:{Authorization:`Bearer ${settings.streamToken}`,Range:'bytes=0-1023'}});
+const bytes=new Uint8Array(await reference.arrayBuffer());
+if(part.status!==206||data.length!==1024||bytes.length!==1024||!data.every((v,i)=>v===bytes[i]))throw Error('Live API bytes differ from the Go response');
+const invalid=await fetch(url,{headers:{Range:`bytes=${video.sizeBytes}-`}});
+if(invalid.status!==416||invalid.headers.get('content-range')!==`bytes */${video.sizeBytes}`)throw Error('Invalid range mismatch');
+await invalid.body?.cancel();
+const report={time:new Date().toISOString(),records:catalogue.items.length,uniqueIds:new Set(catalogue.items.map(v=>v.id)).size,initialComplete:true,formats:[...new Set(catalogue.items.map(v=>v.mimeType))],head:head.status,range:part.status,length:data.length,bytesMatch:true,invalidRange:invalid.status};
+await writeFile(new URL('../.local/runtime-verification.json',import.meta.url),JSON.stringify(report,null,2));console.log(JSON.stringify(report));

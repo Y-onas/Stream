@@ -15,13 +15,15 @@ import (
 )
 
 type HTTPOptions struct {
-	MessageID      int
-	Host           string
-	ChunkSize      int
-	Concurrency    int
-	RequestTimeout time.Duration
-	WriteTimeout   time.Duration
-	Logger         *log.Logger
+	// TrustedInternal is used only behind the service's authenticated gateway.
+	TrustedInternal bool
+	MessageID       int
+	Host            string
+	ChunkSize       int
+	Concurrency     int
+	RequestTimeout  time.Duration
+	WriteTimeout    time.Duration
+	Logger          *log.Logger
 }
 
 type Handler struct {
@@ -44,7 +46,7 @@ func ValidateAddress(address string) error {
 }
 
 func NewHandler(provider Provider, opts HTTPOptions) (*Handler, error) {
-	if err := ValidateAddress(opts.Host); err != nil {
+	if err := ValidateAddress(opts.Host); err != nil && !opts.TrustedInternal {
 		return nil, err
 	}
 	if err := ValidateChunk(opts.ChunkSize); err != nil {
@@ -61,7 +63,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
 	// Prevent DNS rebinding and cross-origin browser access to this local-only tool.
-	if r.Host != h.opts.Host || (r.Header.Get("Origin") != "" && r.Header.Get("Origin") != "http://"+h.opts.Host) || r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+	if !h.opts.TrustedInternal && (r.Host != h.opts.Host || (r.Header.Get("Origin") != "" && r.Header.Get("Origin") != "http://"+h.opts.Host) || r.Header.Get("Sec-Fetch-Site") == "cross-site") {
 		http.Error(w, "local same-origin requests only", http.StatusForbidden)
 		return
 	}

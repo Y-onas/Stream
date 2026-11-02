@@ -1,0 +1,292 @@
+generator client {
+  provider = "prisma-client-js"
+}
+datasource db {
+  provider = "postgresql"
+}
+model User {
+  id String @id @default(uuid()) @db.Uuid
+  username String @db.VarChar(30)
+  displayName String? @db.VarChar(50)
+  suspensionReason String?
+  statusChangedAt DateTime? @db.Timestamptz(3)
+  statusChangedBy String?
+  usernameCanonical String @unique @db.VarChar(30)
+  passwordHash String
+  status String @default("ACTIVE")
+  version Int @default(0)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  sessions UserSession[]
+  views VideoView[]
+  playbacks PlaybackSession[]
+  requests SubscriptionRequest[]
+  memberships Membership[]
+  auditLogs AdminAuditLog[]
+  likes VideoLike[]
+  savedVideos SavedVideo[]
+  watchedVideos WatchedVideo[]
+  comments Comment[]
+  @@index([createdAt])
+  @@map("hh_users")
+}
+model UserSession {
+  id String @id @default(uuid()) @db.Uuid
+  tokenHash String @unique
+  csrfToken String
+  userId String @db.Uuid
+  user User @relation(fields:[userId],references:[id],onDelete:Cascade)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  expiresAt DateTime @db.Timestamptz(3)
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("hh_user_sessions")
+}
+model ViewerSession {
+  id String @id @default(uuid()) @db.Uuid
+  tokenHash String @unique
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  expiresAt DateTime @db.Timestamptz(3)
+  views VideoView[]
+  playbacks PlaybackSession[]
+  @@index([expiresAt])
+  @@map("hh_viewer_sessions")
+}
+model Video {
+  id String @id
+  title String
+  titleUnverified Boolean @default(true)
+  titleOverride String?
+  descriptionOverride String?
+  published Boolean @default(true)
+  adminUnavailable Boolean @default(false)
+  version Int @default(0)
+  description String @default("")
+  filename String
+  mimeType String
+  sizeBytes BigInt
+  uploadedAt DateTime @db.Timestamptz(3)
+  durationSeconds Float?
+  durationSource String?
+  artwork String?
+  telegramKind String?
+  telegramSourceId String?
+  telegramMessageId Int?
+  available Boolean @default(true)
+  lastSyncedAt DateTime @default(now()) @db.Timestamptz(3)
+  inspectionAttemptedAt DateTime? @db.Timestamptz(3)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  views VideoView[]
+  playbacks PlaybackSession[]
+  likes VideoLike[]
+  savedBy SavedVideo[]
+  watchedBy WatchedVideo[]
+  comments Comment[]
+  @@unique([telegramKind,telegramSourceId,telegramMessageId])
+  @@index([available,uploadedAt])
+  @@index([durationSeconds])
+  @@map("hh_videos")
+}
+model VideoLike {
+  userId String @db.Uuid
+  videoId String
+  user User @relation(fields:[userId],references:[id],onDelete:Cascade)
+  video Video @relation(fields:[videoId],references:[id],onDelete:Cascade)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  @@id([userId,videoId])
+  @@index([userId,createdAt])
+  @@map("hh_video_likes")
+}
+model SavedVideo {
+  userId String @db.Uuid
+  videoId String
+  user User @relation(fields:[userId],references:[id],onDelete:Cascade)
+  video Video @relation(fields:[videoId],references:[id],onDelete:Cascade)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  @@id([userId,videoId])
+  @@index([userId,createdAt])
+  @@map("hh_saved_videos")
+}
+model WatchedVideo {
+  userId String @db.Uuid
+  videoId String
+  user User @relation(fields:[userId],references:[id],onDelete:Cascade)
+  video Video @relation(fields:[videoId],references:[id],onDelete:Cascade)
+  firstWatchedAt DateTime @default(now()) @db.Timestamptz(3)
+  lastWatchedAt DateTime @default(now()) @db.Timestamptz(3)
+  @@id([userId,videoId])
+  @@index([userId,lastWatchedAt])
+  @@map("hh_watched_videos")
+}
+model PlaybackSession {
+  id String @id @default(uuid()) @db.Uuid
+  videoId String
+  video Video @relation(fields:[videoId],references:[id],onDelete:Cascade)
+  viewerId String @db.Uuid
+  viewer ViewerSession @relation(fields:[viewerId],references:[id],onDelete:Cascade)
+  userId String? @db.Uuid
+  user User? @relation(fields:[userId],references:[id],onDelete:SetNull)
+  startedAt DateTime @default(now()) @db.Timestamptz(3)
+  lastHeartbeatAt DateTime @db.Timestamptz(3)
+  lastPosition Float
+  watchedSeconds Float @default(0)
+  sequence Int @default(0)
+  qualifiedAt DateTime? @db.Timestamptz(3)
+  expiresAt DateTime @db.Timestamptz(3)
+  @@index([expiresAt])
+  @@map("hh_playback_sessions")
+}
+model VideoView {
+  id String @id @default(uuid()) @db.Uuid
+  videoId String
+  video Video @relation(fields:[videoId],references:[id],onDelete:Restrict)
+  viewerId String @db.Uuid
+  viewer ViewerSession @relation(fields:[viewerId],references:[id],onDelete:Restrict)
+  userId String? @db.Uuid
+  user User? @relation(fields:[userId],references:[id],onDelete:SetNull)
+  dedupeKey String @unique
+  userDedupeKey String? @unique
+  watchedSeconds Float
+  qualifiedAt DateTime @default(now()) @db.Timestamptz(3)
+  @@index([videoId,qualifiedAt])
+  @@index([userId,videoId])
+  @@index([qualifiedAt])
+  @@map("hh_video_views")
+}
+model MembershipPlan {
+  id String @id
+  name String
+  durationMonths Int
+  priceMinor Int
+  currency String @db.VarChar(3)
+  active Boolean @default(true)
+  sortOrder Int
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  requests SubscriptionRequest[]
+  memberships Membership[]
+  @@map("hh_membership_plans")
+}
+model SubscriptionRequest {
+  id String @id @default(uuid()) @db.Uuid
+  reference String @unique
+  userId String @db.Uuid
+  user User @relation(fields:[userId],references:[id],onDelete:Restrict)
+  usernameSnapshot String
+  planId String
+  plan MembershipPlan @relation(fields:[planId],references:[id],onDelete:Restrict)
+  planNameSnapshot String
+  durationMonthsSnapshot Int
+  amountMinorSnapshot Int
+  currencySnapshot String @db.VarChar(3)
+  status String @default("PENDING")
+  verificationStatus String @default("UNREVIEWED")
+  internalNote String @default("")
+  processedByAdminId String?
+  processedAt DateTime? @db.Timestamptz(3)
+  version Int @default(0)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  membership Membership?
+  auditLogs AdminAuditLog[]
+  @@index([status,createdAt])
+  @@index([userId,createdAt])
+  @@map("hh_subscription_requests")
+}
+model Membership {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  user User @relation(fields:[userId],references:[id],onDelete:Restrict)
+  planId String
+  plan MembershipPlan @relation(fields:[planId],references:[id],onDelete:Restrict)
+  requestId String? @unique @db.Uuid
+  request SubscriptionRequest? @relation(fields:[requestId],references:[id],onDelete:Restrict)
+  source String @default("PAYMENT")
+  version Int @default(0)
+  operationKey String? @unique
+  planName String
+  durationMonths Int
+  amountMinor Int
+  currency String @db.VarChar(3)
+  activatedAt DateTime @db.Timestamptz(3)
+  expiresAt DateTime @db.Timestamptz(3)
+  approvedByAdminId String
+  revokedAt DateTime? @db.Timestamptz(3)
+  revokeReason String?
+  @@index([userId,expiresAt])
+  @@index([expiresAt])
+  @@index([activatedAt])
+  @@map("hh_memberships")
+}
+model AdminAuditLog {
+  id String @id @default(uuid()) @db.Uuid
+  adminId String
+  operationKey String? @unique
+  action String
+  targetType String
+  targetId String
+  userId String? @db.Uuid
+  user User? @relation(fields:[userId],references:[id],onDelete:SetNull)
+  requestId String? @db.Uuid
+  request SubscriptionRequest? @relation(fields:[requestId],references:[id],onDelete:SetNull)
+  before Json?
+  after Json?
+  note String @default("")
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  @@index([createdAt])
+  @@index([targetType,targetId,createdAt])
+  @@index([adminId,createdAt])
+  @@index([action,createdAt])
+  @@map("hh_admin_audit_logs")
+}
+
+model Administrator {
+  id String @id @default(uuid()) @db.Uuid
+  email String @unique @db.VarChar(254)
+  name String @db.VarChar(80)
+  clerkUserId String? @unique
+  role String @default("ADMIN")
+  status String @default("ACTIVE")
+  version Int @default(0)
+  createdBy String?
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  @@map("hh_administrators")
+}
+model PlatformSettings {
+  id String @id @default("platform")
+  platformName String @default("Habeshan HUB") @db.VarChar(80)
+  defaultCurrency String @default("ETB") @db.VarChar(3)
+  timezone String @default("Africa/Nairobi")
+  registrationOpen Boolean @default(true)
+  maintenanceMode Boolean @default(false)
+  maintenanceMessage String @default("We are carrying out maintenance. Please try again shortly.")
+  streamingAccess String @default("PUBLIC")
+  supportUsername String?
+  supportDisplayName String? @db.VarChar(80)
+  adminBootstrapAt DateTime? @db.Timestamptz(3)
+  version Int @default(0)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  @@map("hh_platform_settings")
+}
+model Comment {
+  id String @id @default(uuid()) @db.Uuid
+  videoId String
+  video Video @relation(fields:[videoId],references:[id],onDelete:Restrict)
+  userId String @db.Uuid
+  user User @relation(fields:[userId],references:[id],onDelete:Restrict)
+  body String
+  status String @default("PUBLISHED")
+  version Int @default(0)
+  moderationReason String?
+  moderatedBy String?
+  moderatedAt DateTime? @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  @@index([videoId,status,createdAt])
+  @@index([userId,createdAt])
+  @@index([status,createdAt])
+  @@map("hh_comments")
+}

@@ -1,0 +1,15 @@
+import {useEffect,useState} from 'react';
+import {api} from '../services/api.mjs';
+import {Icon} from './Icons';
+import {useAccount} from '../hooks/useAccount';
+import {Link} from '../hooks/useRoute';
+export function Comments({videoId}){
+  const account=useAccount(),[state,setState]=useState({loading:true,items:[]}),[body,setBody]=useState(''),[busy,setBusy]=useState(false),[retry,setRetry]=useState(0),[submitError,setSubmitError]=useState(''),[offset,setOffset]=useState(0);
+  useEffect(()=>{const abort=new AbortController();let pending=false;setState({loading:true,items:[]});const refresh=async()=>{if(pending)return;pending=true;try{const data=await api(`/videos/${videoId}/comments?offset=${offset}&limit=24`,{signal:abort.signal});setState({...data,loading:false});}catch(e){if(e.name!=='AbortError')setState({error:true,items:[]});}finally{pending=false;}};void refresh();const timer=setInterval(refresh,15000);addEventListener('focus',refresh);return()=>{abort.abort();clearInterval(timer);removeEventListener('focus',refresh);};},[videoId,retry,offset]);
+  async function submit(event){event.preventDefault();if(!body.trim()||state.available!==true||!account?.user)return;setBusy(true);setSubmitError('');try{await api(`/videos/${videoId}/comments`,{method:'POST',json:{body:body.trim()}});setBody('');setOffset(0);setRetry(n=>n+1);}catch(e){setSubmitError(e.message);}finally{setBusy(false);}}
+  return <section className="comments"><h2><Icon name="comment"/> Conversation</h2>
+    {state.loading?<p role="status">Loading comments…</p>:state.error?<p role="alert">Comments couldn't load. <button className="text-button" onClick={()=>setRetry(n=>n+1)}>Try again</button></p>:state.available===false?<p className="muted">Comments are unavailable.</p>:!state.items?.length?<p className="muted">No comments yet. Be the first to join the conversation.</p>:<ul className="comment-list">{state.items.map(c=><li key={c.id}><span className="avatar">{c.author.displayName[0]}</span><div><strong>{c.author.displayName}</strong> <time dateTime={c.createdAt}>{new Date(c.createdAt).toLocaleDateString()}</time><p>{c.body}</p></div></li>)}</ul>}
+    {(offset>0||state.nextOffset!=null)&&<div className="comment-pagination"><button className="nav-pill" disabled={offset===0} onClick={()=>setOffset(n=>Math.max(0,n-24))}>Newer comments</button><button className="nav-pill" disabled={state.nextOffset==null} onClick={()=>setOffset(state.nextOffset)}>Older comments</button></div>}
+    {account?.user?<form onSubmit={submit}><label htmlFor="comment">Add a comment</label><textarea id="comment" value={body} maxLength={2000} onChange={e=>setBody(e.target.value)} placeholder="Share your thoughts…" disabled={state.available!==true||busy}/><div className="comment-footer"><small>Be thoughtful. Keep it kind.</small><button className="gold-button" disabled={state.available!==true||busy||!body.trim()}>{busy?'Posting…':'Post comment'}</button></div>{submitError&&<p role="alert">{submitError}</p>}</form>:<p className="muted"><Link className="text-button" to="/account?mode=login">Log in</Link> to join the conversation.</p>}
+  </section>;
+}

@@ -1,0 +1,20 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import {once} from 'node:events';
+import {createAdapter} from '../apps/web/dev/adapter.mjs';
+test('adapter forwards exact ranges and restricts local routes/origins',async t=>{
+  let calls=0;
+  const upstream=http.createServer((req,res)=>{calls++;assert.equal(req.url,'/media/stream/7');assert.equal(req.headers.origin,undefined);assert.equal(req.headers.range,'bytes=100-199');res.writeHead(206,{'Content-Length':'100','Content-Range':'bytes 100-199/1000','Content-Type':'video/mp4','ETag':'"test"'});res.end(Buffer.alloc(100,8));});
+  upstream.listen(0,'127.0.0.1');await once(upstream,'listening');t.after(()=>upstream.close());
+  let handler;const server=http.createServer((req,res)=>handler(req,res,()=>{res.writeHead(404);res.end();}));server.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>server.close());
+  const origin=`http://127.0.0.1:${server.address().port}`;
+  handler=createAdapter({origin,target:`http://127.0.0.1:${upstream.address().port}`,load:async()=>[{id:'selected',messageId:7,title:'Real selection',sizeBytes:1000}]});
+  let res=await fetch(origin+'/api/videos/selected/stream',{headers:{Range:'bytes=100-199',Origin:origin}});assert.equal(res.status,206);assert.equal((await res.arrayBuffer()).byteLength,100);
+  assert.equal((await fetch(origin+'/api/videos/arbitrary/stream')).status,404);
+  assert.equal((await fetch(origin+'/api/videos/selected/stream?peer=123')).status,400);
+  assert.equal((await fetch(origin+'/api/videos',{headers:{Origin:'https://other.example'}})).status,403);
+  assert.equal((await fetch(origin+'/api/trending?period=day')).status,501);
+  assert.equal((await fetch(origin+'/api/videos?sort=most-viewed')).status,501);
+  assert.equal((await fetch(origin+'/api/videos/selected/comments')).status,501);assert.equal(calls,1);
+});
