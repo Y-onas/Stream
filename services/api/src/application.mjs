@@ -46,7 +46,7 @@ export function createApplication({db,config,production=false,now=()=>new Date()
   async function audit(tx,admin,action,targetType,targetId,before,after,extra={}){await tx.adminAuditLog.create({data:{adminId:admin.id,action,targetType,targetId,...extra,...(before?{before:jsonValue(before)}:{}),...(after?{after:jsonValue(after)}:{})}});}
   async function catalogue(url,owned={}){
     const sort=url.searchParams.get('sort')||'latest',q=(url.searchParams.get('q')||'').trim();if(!['latest','oldest','most-viewed','longest'].includes(sort)||q.length>100)throw new HttpError(400,'Invalid catalogue query.');
-    const {take,skip}=cursorPage(url),ids=url.searchParams.get('ids')?.split(',');if(ids&&(ids.length>100||ids.some(id=>!/^\w[\w-]*$/.test(id))))throw new HttpError(400,'Invalid video IDs.');
+    const {take,skip}=cursorPage(url),ids=url.searchParams.get('ids')?.split(',');if(ids&&(ids.length>100||ids.some(id=>!isUUID(id))))throw new HttpError(400,'Invalid video IDs.');
     const accessType=url.searchParams.get('access');if(accessType&&!['VIP','FREE'].includes(accessType))throw new HttpError(400,'Invalid access classification.');
     const where={...publicVideoWhere,...owned,...(accessType?{accessType}:{}),...(q?{OR:[{titleOverride:{contains:q,mode:'insensitive'}},{title:{contains:q,mode:'insensitive'}},{filename:{contains:q,mode:'insensitive'}}]}:{}),...(ids?{publicId:{in:ids}}:{})};
     const orderBy=sort==='most-viewed'?[{views:{_count:'desc'}},{uploadedAt:'desc'},{id:'asc'}]:sort==='longest'?[{durationSeconds:{sort:'desc',nulls:'last'}},{uploadedAt:'desc'},{id:'asc'}]:[{uploadedAt:sort==='oldest'?'asc':'desc'},{id:'asc'}];
@@ -61,7 +61,9 @@ export function createApplication({db,config,production=false,now=()=>new Date()
     const records=await db.video.findMany({where:{id:{in:rows.map(r=>r.videoId)},...publicVideoWhere}}),map=new Map(records.map(v=>[v.id,v]));return {available:true,period,items:rows.flatMap(r=>map.has(r.videoId)?[videoDTO(map.get(r.videoId))]:[])};
   }
   async function newRequest(user,planId,videoId){
-    if(videoId!==undefined&&(!isUUID(videoId)||!await db.video.findFirst({where:{publicId:videoId,...publicVideoWhere},select:{id:true}})))throw new HttpError(400,'Select an available video.');
+    // Optional return navigation must not block membership requests when a
+    // video is hidden, removed or the link contains an unusable public ID.
+    if(videoId!==undefined&&videoId!==null&&(!isUUID(videoId)||!await db.video.findFirst({where:{publicId:videoId,...publicVideoWhere},select:{id:true}})))videoId=undefined;
     if(typeof planId!=='string')throw new HttpError(400,'Select a membership package.');
     const existing=await db.subscriptionRequest.findFirst({where:{userId:user.id,planId,status:'PENDING'}});if(existing){if(videoId&&existing.intendedVideoPublicId!==videoId)return db.subscriptionRequest.update({where:{id:existing.id},data:{intendedVideoPublicId:videoId,version:{increment:1}}});return existing;}
     const plan=await db.membershipPlan.findFirst({where:{id:planId,active:true}});if(!plan)throw new HttpError(400,'This package is not available.');
