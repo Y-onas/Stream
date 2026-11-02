@@ -2,7 +2,7 @@ import React,{createContext,useContext,useEffect,useRef,useState} from 'react';
 export const AdminContext=createContext(null);
 export const useAdmin=()=>useContext(AdminContext);
 export const date=v=>v?new Date(v).toLocaleString():'—';
-export const money=(amount,currency)=>new Intl.NumberFormat(undefined,{style:'currency',currency}).format(amount/100);
+export const money=(amount,currency)=>new Intl.NumberFormat(undefined,{style:'currency',currency,minimumFractionDigits:2,maximumFractionDigits:2}).format(amount/100);
 export const duration=v=>Number.isFinite(v)?`${Math.floor(v/3600)}h ${Math.floor(v%3600/60)}m ${Math.floor(v%60)}s`:'Unknown';
 export function useRecords(endpoint){const {request,revision}=useAdmin(),[state,setState]=useState({loading:true});useEffect(()=>{const abort=new AbortController();setState({loading:true});request(endpoint,{signal:abort.signal}).then(data=>setState({data,loading:false})).catch(e=>{if(e.name!=='AbortError')setState({error:e.message,loading:false});});return()=>abort.abort();},[endpoint,revision]);return state;}
 export function Status({state}){return state.loading?<p role="status">Loading records…</p>:state.error?<p className="admin-error" role="alert">{state.error}</p>:null;}

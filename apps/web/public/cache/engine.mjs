@@ -11,6 +11,7 @@ export function parseRange(header,size) {
   return {start:a,end:b===null?size-1:Math.min(b,size-1),partial:true};
 }
 const abortError=()=>new DOMException('Request canceled','AbortError');
+const prohibitsStorage=headers=>/(?:^|,)\s*no-store\s*(?:[=,]|$)/i.test(headers.get('cache-control')||'');
 // One shared network operation per segment. Cancel it only when all consumers leave.
 export class SharedRequests {
   constructor(){this.pending=new Map();}
@@ -60,7 +61,7 @@ export class RangeEngine {
       try{settings=await this.store.settings();const cached=settings.enabled?await this.store.get(key):null;if(cached && cached.end===end && cached.data.byteLength===end-base+1)return cached.data;}catch{/* Storage failure must not prevent streaming. */}
       const {res,bytes}=await this.network(url,{headers:{Range:`bytes=${base}-${end}`,'If-Range':meta.etag},cache:'no-store',signal:sharedSignal});
       if(res.status!==206||res.headers.get('content-range')!==`bytes ${base}-${end}/${meta.size}`||res.headers.get('etag')!==meta.etag||bytes.byteLength!==end-base+1)throw new Error('Stream changed or returned an incomplete range');
-      if(settings?.enabled)try{await this.store.put({key,videoId:new URL(url).pathname.split('/')[3],etag:meta.etag,start:base,end,data:bytes},settings.generation);}catch{/* Quota/security failures leave network playback available. */}
+      if(settings?.enabled&&!prohibitsStorage(res.headers))try{await this.store.put({key,videoId:new URL(url).pathname.split('/')[3],etag:meta.etag,start:base,end,data:bytes},settings.generation);}catch{/* Quota/security failures leave network playback available. */}
       return bytes;
     },signal);
   }
@@ -71,7 +72,9 @@ export class RangeEngine {
     let meta;
     try {
       const {res}=await this.shared.get('HEAD:'+request.url,signal=>this.network(request.url,{method:'HEAD',cache:'no-store',signal}),cancel.signal);
-      if(!res.ok){cleanup();return res;}
+      if(!res.ok){cleanup();return this.fetcher(request);}
+      // Revalidate policy before reading any previously persisted segment.
+      if(prohibitsStorage(res.headers)){cleanup();return this.fetcher(request,{cache:'no-store'});}
       meta={size:Number(res.headers.get('content-length')),type:res.headers.get('content-type')||'application/octet-stream',etag:res.headers.get('etag')};
       if(!meta.etag||meta.etag.startsWith('W/')||!Number.isSafeInteger(meta.size)||meta.size<=0){cleanup();return this.fetcher(request);}
     }catch(error){cleanup();if(cancel.signal.aborted)throw error;return this.fetcher(request);}

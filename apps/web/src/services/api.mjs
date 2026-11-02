@@ -2,7 +2,7 @@ let csrfToken=null;
 export async function api(path,options={}) {
   const {json,...request}=options;
   const response=await fetch(`/api${path}`,{credentials:'same-origin',...request,...(json!==undefined?{body:JSON.stringify(json)}:{}),headers:{'Accept':'application/json',...(json!==undefined?{'Content-Type':'application/json'}:{}),...(csrfToken?{'X-CSRF-Token':csrfToken}:{}),...options.headers}});
-  const data=await response.json();
+  const data=(await response.json().catch(()=>null))??{};
   if(Object.hasOwn(data,'csrfToken'))csrfToken=data.csrfToken;
   if(!response.ok && response.status!==501)throw Object.assign(new Error(data.message || 'Something went wrong. Please try again.'),{status:response.status,code:data.code});
   return data;

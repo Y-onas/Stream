@@ -63,5 +63,28 @@ test('Module 4.2 database-authorized administrators and complete platform manage
  await withControl(async client=>{await assert.rejects(client.query(`UPDATE "${schema}".hh_admin_audit_logs SET note='cannot change'`),/append-only/);await assert.rejects(client.query(`DELETE FROM "${schema}".hh_admin_audit_logs`),/append-only/);});
  assert.equal((await admin.call(`/api/admin/administrators/${staffRecord.body.id}`,{method:'POST',data:{name:'Staff',role:'ADMIN',status:'DISABLED',version:0,reason:'Isolated administrator revocation'}})).status,200);assert.equal((await staff.call('/api/admin/me')).status,403);assert.equal(await db.administrator.count(),2);
  const current=await db.membership.findFirst({where:{userId:user.id,revokedAt:null,expiresAt:{gt:clock}}});const race=await Promise.all([admin.call(`/api/admin/memberships/${current.id}/change`,{method:'POST',data:{action:'extend',months:1,version:current.version,operationKey:randomUUID(),reason:'Concurrent extension test'}}),admin.call(`/api/admin/memberships/${current.id}/revoke`,{method:'POST',data:{version:current.version,note:'Concurrent revocation test'}})]);assert.deepEqual(race.map(r=>r.status).sort(),[200,409]);
+ await t.test('saved timezone changes align trending, overview and analytics across calendar and DST boundaries',async()=>{
+  const originalClock=clock,originalTimezone=settings.timezone,view=await db.videoView.findFirst();
+  try{
+   for(const [at,qualifiedAt,nairobi] of [
+    ['2028-05-01T01:00:00Z','2028-04-30T20:00:00Z',[0,0,0]],
+    ['2028-05-02T01:00:00Z','2028-05-01T20:00:00Z',[0,1,1]],
+    ['2028-03-13T01:00:00Z','2028-03-12T08:30:00Z',[0,0,1]],
+   ]){
+    clock=new Date(at);await db.videoView.update({where:{id:view.id},data:{qualifiedAt:new Date(qualifiedAt)}});
+    for(const [timezone,expected] of [['America/Los_Angeles',[1,1,1]],['Africa/Nairobi',nairobi]]){
+     await saveSettings({timezone});
+     const overview=await admin.call('/api/admin/overview'),analytics=await admin.call('/api/admin/analytics?preset=today');
+     assert.equal(overview.status,200);assert.equal(analytics.status,200);assert.equal(overview.body.timezone,timezone);assert.equal(analytics.body.range.timezone,timezone);
+     assert.deepEqual([overview.body.viewsToday,overview.body.viewsThisWeek,overview.body.viewsThisMonth],expected,`${at} ${timezone}`);
+     assert.deepEqual([analytics.body.views.today,analytics.body.views.week,analytics.body.views.month],expected);
+     for(const [index,period] of ['day','week','month'].entries()){
+      const result=await visitor.call(`/api/trending?period=${period}`);assert.equal(result.status,200);
+      assert.deepEqual(result.body.items.map(v=>v.id),expected[index]?[videoId]:[],`${at} ${timezone} ${period}`);
+     }
+    }
+   }
+  }finally{clock=originalClock;await db.videoView.update({where:{id:view.id},data:{qualifiedAt:view.qualifiedAt}});await saveSettings({timezone:originalTimezone});}
+ });
  console.log(JSON.stringify({event:'module42_acceptance_passed',isolatedSchema:true,realGoogleLogin:false,realPayments:false,appendOnlyAudit:true}));
 });

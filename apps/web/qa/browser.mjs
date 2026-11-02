@@ -1,3 +1,4 @@
+import {cacheMessage} from '../src/services/api.mjs';
 const storagePath='/cache/storage.mjs',enginePath='/cache/engine.mjs';
 const {SegmentStore}=await import(/* @vite-ignore */ storagePath);
 const {RangeEngine,parseRange}=await import(/* @vite-ignore */ enginePath);
@@ -9,7 +10,7 @@ document.querySelector('#run').onclick=async()=>{
   try {
     await store.configure({clear:true,enabled:true});
     const size=10000,data=Uint8Array.from({length:size},(_,i)=>i%251);let calls=0;
-    const fetcher=async(url,options)=>{if(options.method==='HEAD')return new Response(null,{headers:{'Content-Length':String(size),ETag:'"qa"'}});calls++;const r=parseRange(options.headers.Range,size);return new Response(data.slice(r.start,r.end+1),{status:206,headers:{'Content-Length':String(r.end-r.start+1),'Content-Range':`bytes ${r.start}-${r.end}/${size}`,ETag:'"qa"'}});};
+    const fetcher=async(url,options)=>{if(options.method==='HEAD')return new Response(null,{headers:{'Content-Length':String(size),'Cache-Control':'private, max-age=60',ETag:'"qa"'}});calls++;const r=parseRange(options.headers.Range,size);return new Response(data.slice(r.start,r.end+1),{status:206,headers:{'Content-Length':String(r.end-r.start+1),'Content-Range':`bytes ${r.start}-${r.end}/${size}`,ETag:'"qa"','Cache-Control':'private, max-age=60'}});};
     const engine=new RangeEngine({store,fetcher,segmentSize:1024});
     const read=async range=>{const res=await engine.respond(new Request(location.origin+'/api/videos/qa/stream',{headers:{Range:range}}));return new Uint8Array(await res.arrayBuffer());};
     const first=await read('bytes=1000-1100');check(first.length===101&&first.every((v,i)=>v===data[1000+i]),'Real IndexedDB: exact cross-segment bytes');
@@ -23,19 +24,23 @@ document.querySelector('#live').onclick=async()=>{
   output.textContent='';
   try{
     log('Registering service worker…');
-    await navigator.serviceWorker.register('/sw.js',{type:'module'});await navigator.serviceWorker.ready;
+    const registration=await navigator.serviceWorker.register('/sw.js',{type:'module'});await registration.update();await navigator.serviceWorker.ready;
     if(!navigator.serviceWorker.controller){log('Reload this page once, then rerun the live check.');return;}
-    log('Loading local catalogue…');
-    const catalogue=await (await fetch('/api/videos')).json();const video=catalogue.items[0];if(!video)throw Error('No locally selected video');
+    const worker=await cacheMessage();
+    if(!worker.ok||worker.workerRevision!==5){log('The service worker update is finishing. Reload this page, then rerun the live check.');return;}
+    check(worker.workerRevision===5,'Active service worker revision 5');
+    log('Loading live catalogue…');
+    const catalogue=await (await fetch('/api/videos')).json();const video=catalogue.items[0];if(!video)throw Error('No available video');
     const url=`/api/videos/${video.id}/stream`;
     const get=async range=>{const res=await fetch(url,{headers:{Range:range}});const bytes=new Uint8Array(await res.arrayBuffer());return {res,bytes};};
     log('Reading first range…');
     const a=await get('bytes=0-1023');check(a.res.status===206&&a.bytes.length===1024,'Real Telegram through service worker: 206 and exactly 1,024 bytes');
-    const b=await get('bytes=100-199');check(b.bytes.length===100&&b.bytes.every((v,i)=>v===a.bytes[100+i]),'Overlapping cached bytes match');
+    const b=await get('bytes=100-199');check(b.bytes.length===100&&b.bytes.every((v,i)=>v===a.bytes[100+i]),'Overlapping network range returns exact bytes');
     const c=await get('bytes=1048563-1048607');check(c.res.status===206&&c.bytes.length===45,'Real range crosses browser and Telegram 1 MiB boundary');
     const d=await get('bytes=1048563-1048607');check(d.bytes.every((v,i)=>v===c.bytes[i]),'Repeated range returns identical bytes');
-    const state=await new SegmentStore().settings();check(state.total>=2*1024*1024,'Segments exist in this browser’s IndexedDB');
-    log('Live checks complete. Verify the Go log contains no additional GETs for cached repeats.');
+    check(/(?:^|,)\s*no-store\s*(?:[=,]|$)/i.test(a.res.headers.get('cache-control')||''),'Real stream keeps its no-store response policy');
+    const state=await new SegmentStore().settings();check(state.total===0,'No private video segments persisted in IndexedDB');check(state.enabled===false,'Automatic segment caching stays disabled');
+    log('Live no-store checks complete. Repeated ranges are fetched from the network.');
   }catch(e){log('FAIL '+e.message);const channel=new MessageChannel();channel.port1.onmessage=event=>{log('Worker diagnostic: '+JSON.stringify(event.data));channel.port1.close();};navigator.serviceWorker.controller?.postMessage({type:'CACHE_STATUS'},[channel.port2]);}
 };
 // A local, visibly labeled synthetic clip tests browser decoding independently of

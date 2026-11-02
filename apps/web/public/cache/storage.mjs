@@ -1,5 +1,5 @@
 const MiB = 1024 * 1024;
-const defaults = () => ({key:'settings',limit:128*MiB,total:0,generation:0,enabled:true});
+const defaults = () => ({key:'settings',limit:128*MiB,total:0,generation:0,enabled:false});
 export class SegmentStore {
   constructor(factory = globalThis.indexedDB, name = 'phonofilm-segments-v1') {this.factory=factory; this.name=name; this.db=null;}
   async open() {

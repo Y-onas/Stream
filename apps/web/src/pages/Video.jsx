@@ -13,6 +13,9 @@ export function VideoPage({video:catalogueVideo,saved,onSave,loading,sourceUrl})
   const account=useAccount(),progressKey=id=>`progress:${account.user?.id||'guest'}:${id}`;
   const [detail,setDetail]=useState(null),[detailLoading,setDetailLoading]=useState(true);
   const requestedId=location.pathname.split('/')[2],video=catalogueVideo||detail;
+  // Return to the catalogue that opened this video; Home includes Trending.
+  const returnPath=['/','/browse','/saved','/me/liked','/me/watched'].includes(history.state?.from)?history.state.from:'/';
+  const returnLabel=returnPath==='/'?'Back to Home':returnPath==='/browse'?'Back to Search':'Back to videos';
   useEffect(()=>{if(catalogueVideo){setDetailLoading(false);return;}if(loading)return;const abort=new AbortController();setDetailLoading(true);api(`/videos/${encodeURIComponent(requestedId)}`,{signal:abort.signal}).then(setDetail).catch(()=>{}).finally(()=>{if(!abort.signal.aborted)setDetailLoading(false);});return()=>abort.abort();},[catalogueVideo?.id,loading,requestedId]);
   const player=useRef(null),lastSave=useRef(0),[error,setError]=useState(''),[waiting,setWaiting]=useState(false),[ready,setReady]=useState(false),[revision,setRevision]=useState(0),[resume,setResume]=useState(()=>video?readLocal(progressKey(video.id),null):null),[localError,setLocalError]=useState(false);
   useQualifiedView(player,video,revision,!sourceUrl);
@@ -22,7 +25,7 @@ export function VideoPage({video:catalogueVideo,saved,onSave,loading,sourceUrl})
   async function retryWithoutCache(){await cacheMessage({enabled:false});setError('');setRevision(n=>n+1);}
   if(loading||(!video&&detailLoading))return <div className="page-content"><p role="status">Loading video…</p></div>;
   if(!video)return <Empty title="Video not found">Return to Search to find an available video.</Empty>;
-  return <div className="watch-page"><Link className="back-link" to="/browse"><Icon name="left" size={18}/> Back to videos</Link><div className="player-frame">
+  return <div className="watch-page"><Link className="back-link" to={returnPath}><Icon name="left" size={18}/> {returnLabel}</Link><div className="player-frame">
     <video ref={player} key={`${video.id}-${revision}`} controls playsInline preload="metadata" poster={video.artwork||undefined} src={sourceUrl||streamUrl(video.id)} onWaiting={()=>setWaiting(true)} onPlaying={()=>setWaiting(false)} onCanPlay={()=>setWaiting(false)} onLoadedMetadata={()=>{setReady(true);setWaiting(false);}} onError={playError} aria-label={video.title}/>
     {waiting&&!error&&<div className="player-loading" role="status"><Icon name="loading" size={30} className="spin"/><span>Loading video…</span></div>}
     {error&&<div className="player-error" role="alert"><Icon name="error" size={32}/><h2>Unable to play this video</h2><p>{error}</p><button className="gold-button" onClick={()=>{setError('');setRevision(n=>n+1);}}>Try again</button><button className="text-button" onClick={retryWithoutCache}>Retry with device caching off</button></div>}

@@ -5,7 +5,7 @@ export function createAdminAuth(config,{db,verify=verifyToken,getUser}={}){
   return async req=>{
     const bearer=/^Bearer (.+)$/.exec(req.headers.authorization||'');
     if(!bearer)throw new HttpError(401,'Sign in to the administrator application.');
-    if((!config.clerkSecretKey&&!config.clerkJwtKey)||!db)throw new HttpError(503,'Administrator authentication is not configured.');
+    if((!config.clerkSecretKey&&!config.clerkJwtKey)||(!clerk&&!getUser)||!db)throw new HttpError(503,'Administrator authentication is not configured.');
     let claims;try{claims=await verify(bearer[1],{secretKey:config.clerkSecretKey,jwtKey:config.clerkJwtKey,authorizedParties:[config.adminOrigin]});}catch{throw new HttpError(401,'Administrator session could not be verified.');}
     if(!claims.sub)throw new HttpError(401,'Administrator session could not be verified.');
     let user;try{user=await (getUser?getUser(claims.sub):clerk.users.getUser(claims.sub));}catch{throw new HttpError(503,'Administrator identity verification is unavailable.');}

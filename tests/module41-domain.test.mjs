@@ -17,6 +17,22 @@ test('Telegram handoff is a direct human conversation draft, not an automatic me
 const approved={id:'admin-db-id',email:'allowed@example.test',name:'Owner',role:'OWNER',status:'ACTIVE',clerkUserId:'allowed'};
 const googleUser=email=>({emailAddresses:[{emailAddress:email,verification:{status:'verified'}}],externalAccounts:[{provider:'oauth_google',emailAddress:email,verification:{status:'verified'}}]});
 const adminDb={administrator:{findUnique:async({where})=>where.email===approved.email?approved:null}};
+test('incomplete administrator authentication configurations fail before verification or identity lookup',async t=>{
+  for(const [name,config,db,getUser] of [
+    ['JWT key without identity lookup',{clerkJwtKey:'test-only'},adminDb,undefined],
+    ['no verification keys',{},adminDb,undefined],
+    ['identity lookup without verification keys',{},adminDb,async()=>assert.fail('Identity lookup must not run')],
+    ['no database',{clerkSecretKey:'test-only'},undefined,async()=>assert.fail('Identity lookup must not run')],
+  ]){
+    await t.test(name,async()=>{
+      const auth=createAdminAuth({adminOrigin:'https://admin.example',...config},{db,getUser,verify:async()=>assert.fail('Token verification must not run')});
+      await assert.rejects(auth({headers:{authorization:'Bearer test-token'}}),error=>{
+        assert.ok(error instanceof HttpError);assert.equal(error.status,503);assert.equal(error.message,'Administrator authentication is not configured.');return true;
+      });
+    });
+  }
+});
+
 test('Clerk authentication checks the verified Google email against the database, not an environment allowlist',async()=>{
   const config={adminOrigin:'https://admin.example',adminIds:['outsider'],clerkSecretKey:'test-only',clerkPublishableKey:''};let claims={sub:'outsider'},google=true;
   const auth=createAdminAuth(config,{db:adminDb,verify:async(token,options)=>{assert.deepEqual(options.authorizedParties,[config.adminOrigin]);if(token==='invalid')throw Error();return claims;},getUser:async id=>google?googleUser(id+'@example.test'):{externalAccounts:[]}});

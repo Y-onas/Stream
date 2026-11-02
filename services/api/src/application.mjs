@@ -53,7 +53,8 @@ export function createApplication({db,config,production=false,now=()=>new Date()
   }
   async function trending(period){
     if(!['day','week','month'].includes(period))throw new HttpError(400,'Invalid period.');
-    const rows=await db.$queryRaw`SELECT v."videoId",count(*) AS views FROM ${table('hh_video_views')} v JOIN ${table('hh_videos')} m ON m.id=v."videoId" WHERE m.published AND m.available AND NOT m."adminUnavailable" AND v."qualifiedAt">=(date_trunc(${period}, ${snapshot()}::timestamptz AT TIME ZONE ${config.timezone}) AT TIME ZONE ${config.timezone}) GROUP BY "videoId" ORDER BY views DESC,"videoId" ASC LIMIT 24`;
+    const {timezone}=await settings.get();
+    const rows=await db.$queryRaw`SELECT v."videoId",count(*) AS views FROM ${table('hh_video_views')} v JOIN ${table('hh_videos')} m ON m.id=v."videoId" WHERE m.published AND m.available AND NOT m."adminUnavailable" AND v."qualifiedAt">=(date_trunc(${period}, ${snapshot()}::timestamptz AT TIME ZONE ${timezone}) AT TIME ZONE ${timezone}) GROUP BY "videoId" ORDER BY views DESC,"videoId" ASC LIMIT 24`;
     const records=await db.video.findMany({where:{id:{in:rows.map(r=>r.videoId)},...publicVideoWhere}}),map=new Map(records.map(v=>[v.id,v]));return {available:true,period,items:rows.flatMap(r=>map.has(r.videoId)?[videoDTO(map.get(r.videoId))]:[])};
   }
   async function newRequest(user,planId){
@@ -112,8 +113,9 @@ export function createApplication({db,config,production=false,now=()=>new Date()
     },{timeout:10000});
   }
   async function overview(){
-    const [users,videos,qualifiedViews,activeMemberships,pendingRequests,periods]=await Promise.all([db.user.count(),db.video.count({where:{available:true}}),db.videoView.count(),db.membership.count({where:{revokedAt:null,expiresAt:{gt:snapshot()}}}),db.subscriptionRequest.count({where:{status:'PENDING'}}),db.$queryRaw`SELECT count(*) FILTER (WHERE "qualifiedAt">=(date_trunc('day',${snapshot()}::timestamptz AT TIME ZONE ${config.timezone}) AT TIME ZONE ${config.timezone})) AS today,count(*) FILTER (WHERE "qualifiedAt">=(date_trunc('week',${snapshot()}::timestamptz AT TIME ZONE ${config.timezone}) AT TIME ZONE ${config.timezone})) AS week,count(*) FILTER (WHERE "qualifiedAt">=(date_trunc('month',${snapshot()}::timestamptz AT TIME ZONE ${config.timezone}) AT TIME ZONE ${config.timezone})) AS month FROM ${table('hh_video_views')}`]);
-    return {registeredUsers:users,videos,qualifiedViews,viewsToday:Number(periods[0].today),viewsThisWeek:Number(periods[0].week),viewsThisMonth:Number(periods[0].month),activeMemberships,pendingRequests,timezone:config.timezone};
+    const {timezone}=await settings.get();
+    const [users,videos,qualifiedViews,activeMemberships,pendingRequests,periods]=await Promise.all([db.user.count(),db.video.count({where:{available:true}}),db.videoView.count(),db.membership.count({where:{revokedAt:null,expiresAt:{gt:snapshot()}}}),db.subscriptionRequest.count({where:{status:'PENDING'}}),db.$queryRaw`SELECT count(*) FILTER (WHERE "qualifiedAt">=(date_trunc('day',${snapshot()}::timestamptz AT TIME ZONE ${timezone}) AT TIME ZONE ${timezone})) AS today,count(*) FILTER (WHERE "qualifiedAt">=(date_trunc('week',${snapshot()}::timestamptz AT TIME ZONE ${timezone}) AT TIME ZONE ${timezone})) AS week,count(*) FILTER (WHERE "qualifiedAt">=(date_trunc('month',${snapshot()}::timestamptz AT TIME ZONE ${timezone}) AT TIME ZONE ${timezone})) AS month FROM ${table('hh_video_views')}`]);
+    return {registeredUsers:users,videos,qualifiedViews,viewsToday:Number(periods[0].today),viewsThisWeek:Number(periods[0].week),viewsThisMonth:Number(periods[0].month),activeMemberships,pendingRequests,timezone};
   }
   async function authorizeMedia(req,res,id){
     const platform=await settings.get();if(platform.maintenanceMode)throw new HttpError(503,platform.maintenanceMessage,'MAINTENANCE');

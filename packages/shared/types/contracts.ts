@@ -24,7 +24,7 @@ export interface Catalogue {
 export interface Trending {available: true; period: Period; items: Video[];}
 export interface Unavailable {available: false; code: 'NOT_IMPLEMENTED'; message: string; items: [];}
 export interface Comment {id:string; author:{id:string;displayName:string}; body:string;createdAt:string;}
-export interface Comments {available:true;items:Comment[];nextCursor?:string|null;}
+export interface Comments {available:true;items:Comment[];total:number;nextOffset:number|null;}
 export interface NewComment {body:string;}
 export interface PlaybackProgress {videoId:string;position:number;completed:boolean;lastWatched:string;}
 export interface Account {id:string;username:string;displayName:string|null;status:'ACTIVE'|'SUSPENDED';createdAt:string;}

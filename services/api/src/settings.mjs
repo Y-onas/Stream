@@ -3,6 +3,9 @@ export function canonicalEmail(value){if(typeof value!=='string'||value.length>2
 export function settingsDefaults(config){return {id:'platform',platformName:'Habeshan HUB',defaultCurrency:config.currency||'ETB',timezone:config.timezone||'Africa/Nairobi',registrationOpen:true,maintenanceMode:false,maintenanceMessage:'We are carrying out maintenance. Please try again shortly.',streamingAccess:'PUBLIC',supportUsername:supportContact(config.supportUsername)||null,supportDisplayName:null,version:0};}
 export function publicSettings(s){return {platformName:s.platformName,currency:s.defaultCurrency,timezone:s.timezone,registrationOpen:s.registrationOpen,maintenanceMode:s.maintenanceMode,maintenanceMessage:s.maintenanceMessage,streamingAccess:s.streamingAccess,supportUsername:s.supportUsername?`@${s.supportUsername}`:null,supportUrl:s.supportUsername?`https://t.me/${s.supportUsername}`:null,supportDisplayName:s.supportDisplayName};}
 export function createSettings(db,config){let cache=null,until=0;return {invalidate(){cache=null;until=0;},async get(){if(cache&&Date.now()<until)return cache;cache=await db.platformSettings.findUnique({where:{id:'platform'}})||settingsDefaults(config);until=Date.now()+1000;return cache;}};}
+// Called by scripts/db-migrate.mjs after migrations and before API startup.
+// The production entrypoint (scripts/start-production.mjs) awaits that script;
+// local setup runs npm run db:migrate before npm run runtime:api.
 export async function bootstrapAdministration(db,config){
   const defaults=settingsDefaults(config);
   return db.$transaction(async tx=>{

@@ -92,7 +92,7 @@ func (s Syncer) scan(ctx context.Context) error {
 	}
 }
 
-// One rolling history page per recovery cycle reconciles old metadata without
+// One rolling history page per recovery cycle reconciles old metadata and deletions without
 // repeating a full archive scan on every poll. Live edits are handled immediately.
 func (s Syncer) audit(ctx context.Context) error {
 	st := s.Store.Snapshot()
@@ -102,16 +102,34 @@ func (s Syncer) audit(ctx context.Context) error {
 	}
 	next := 0
 	for _, m := range page {
-		if m.GetID() > 0 && (next == 0 || m.GetID() < next) {
-			next = m.GetID()
+		id := m.GetID()
+		if id <= 0 || (st.AuditOffset > 0 && id >= st.AuditOffset) {
+			return errors.New("audit pagination made no progress")
+		}
+		if next == 0 || id < next {
+			next = id
 		}
 	}
-	if len(page) > 0 && next == st.AuditOffset {
-		return errors.New("audit pagination made no progress")
-	}
 	return s.Store.Update(func(current *State) error {
+		seen := make(map[int]bool, len(page))
 		for _, m := range page {
+			seen[m.GetID()] = true
+			key := Key(st.Source, m.GetID())
+			before, existed := st.Videos[key]
+			latest, exists := current.Videos[key]
+			// A live edit or deletion committed during Fetch takes precedence.
+			if existed != exists || before != latest {
+				continue
+			}
 			Upsert(current, m)
+		}
+		// Reconcile only the fetched ID window and unchanged pre-fetch records.
+		// New or edited live records must survive an older history response.
+		for key, record := range st.Videos {
+			inWindow := record.MessageID > next && (st.AuditOffset == 0 || record.MessageID < st.AuditOffset)
+			if inWindow && !seen[record.MessageID] && current.Videos[key] == record {
+				delete(current.Videos, key)
+			}
 		}
 		current.AuditOffset = next
 		return nil

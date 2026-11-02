@@ -3,7 +3,7 @@ import {ClerkProvider,SignIn,useAuth,useClerk} from '@clerk/react';
 const base=import.meta.env.BASE_URL.replace(/\/$/,'');
 const routes=[['/','Overview'],['/users','Users'],['/subscription-requests','Subscription requests'],['/memberships','Memberships'],['/videos','Videos'],['/audit-logs','Audit logs']];
 const date=value=>value?new Date(value).toLocaleString():'—';
-const money=(amount,currency)=>new Intl.NumberFormat(undefined,{style:'currency',currency}).format(amount/100);
+const money=(amount,currency)=>new Intl.NumberFormat(undefined,{style:'currency',currency,minimumFractionDigits:2,maximumFractionDigits:2}).format(amount/100);
 const duration=value=>Number.isFinite(value)?`${Math.floor(value/3600)}h ${Math.floor(value%3600/60)}m ${Math.floor(value%60)}s`:'Unknown';
 function Json({value}){return <pre className="audit-json">{JSON.stringify(value,null,2)}</pre>;}
 function Dashboard(){

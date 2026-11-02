@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/gotd/td/tg"
 	"path/filepath"
+	"slices"
 	"streamweb/internal/discovery"
 	"streamweb/internal/media"
 	"testing"
@@ -120,5 +121,151 @@ func TestStoreCommitFailurePreservesMemory(t *testing.T) {
 	}
 	if store.Snapshot().HighWater != 3 {
 		t.Fatal("failed mutation leaked")
+	}
+}
+
+func TestAuditRemovesOfflineDeletionsAcrossPages(t *testing.T) {
+	for _, kind := range []string{"channel", "group"} {
+		t.Run(kind, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "catalogue.json")
+			store, err := Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := media.Source{ID: 42, Kind: kind}
+			if err = store.Update(func(st *State) error {
+				st.Source = source
+				for _, id := range []int{14, 12, 11, 10, 9, 8, 7, 6, 5, 2} {
+					Upsert(st, message(id, true))
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			items := []tg.MessageClass{message(12, true), message(10, true), message(9, false), message(7, true), message(5, true)}
+			syncer := Syncer{Store: store, Fetch: history(&items), Source: source, PageSize: 3}
+			for _, step := range []struct {
+				offset int
+				ids    []int
+			}{
+				{9, []int{2, 5, 6, 7, 8, 10, 12}},
+				{5, []int{2, 5, 7, 10, 12}},
+				{0, []int{5, 7, 10, 12}},
+			} {
+				if err = syncer.audit(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				// Reopen after every page to verify records and cursor commit together.
+				store, err = Open(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				syncer.Store = store
+				st := store.Snapshot()
+				var ids []int
+				for _, record := range st.Videos {
+					ids = append(ids, record.MessageID)
+				}
+				slices.Sort(ids)
+				if st.AuditOffset != step.offset || !slices.Equal(ids, step.ids) {
+					t.Fatalf("offset=%d ids=%v; want offset=%d ids=%v", st.AuditOffset, ids, step.offset, step.ids)
+				}
+			}
+		})
+	}
+}
+
+func TestAuditEmptyHistoryRemovesAllStaleRecords(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "catalogue.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncer := Syncer{Store: store, PageSize: 2, Fetch: func(context.Context, int, int) ([]tg.MessageClass, error) { return nil, nil }}
+	if err = syncer.Apply(message(10, true)); err != nil {
+		t.Fatal(err)
+	}
+	if err = syncer.audit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if st := store.Snapshot(); len(st.Videos) != 0 || st.AuditOffset != 0 {
+		t.Fatalf("empty history left stale records: %+v", st)
+	}
+}
+
+func TestAuditPreservesConcurrentLiveRecords(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "catalogue.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncer := Syncer{Store: store, PageSize: 3}
+	for _, id := range []int{10, 9, 7, 5} {
+		if err = syncer.Apply(message(id, true)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	syncer.Fetch = func(context.Context, int, int) ([]tg.MessageClass, error) {
+		if err := syncer.Apply(message(11, true)); err != nil {
+			return nil, err
+		}
+		edited := message(9, true)
+		edited.Message = "live edit during history request"
+		if err := syncer.Apply(edited); err != nil {
+			return nil, err
+		}
+		edited = message(5, true)
+		edited.Message = "newer than returned history page"
+		if err := syncer.Apply(edited); err != nil {
+			return nil, err
+		}
+		if err := store.Update(func(st *State) error { delete(st.Videos, Key(st.Source, 7)); return nil }); err != nil {
+			return nil, err
+		}
+		return []tg.MessageClass{message(8, true), message(7, true), message(5, true)}, nil
+	}
+	if err = syncer.audit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	st := store.Snapshot()
+	for _, id := range []int{11, 9, 8, 5} {
+		if _, exists := st.Videos[Key(st.Source, id)]; !exists {
+			t.Fatalf("lost live or returned record %d", id)
+		}
+	}
+	if len(st.Videos) != 4 || st.Videos[Key(st.Source, 9)].Video.Description != "live edit during history request" || st.Videos[Key(st.Source, 5)].Video.Description != "newer than returned history page" {
+		t.Fatalf("incorrect concurrent reconciliation: %+v", st.Videos)
+	}
+}
+
+func TestAuditFailureDoesNotPruneOrAdvance(t *testing.T) {
+	for _, scenario := range []string{"fetch error", "invalid ID", "boundary repeated", "wrong window"} {
+		t.Run(scenario, func(t *testing.T) {
+			store, err := Open(filepath.Join(t.TempDir(), "catalogue.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = store.Update(func(st *State) error { st.AuditOffset = 10; Upsert(st, message(8, true)); return nil }); err != nil {
+				t.Fatal(err)
+			}
+			before := store.Snapshot()
+			syncer := Syncer{Store: store, PageSize: 2, Fetch: func(context.Context, int, int) ([]tg.MessageClass, error) {
+				switch scenario {
+				case "fetch error":
+					return nil, errors.New("network interrupted")
+				case "invalid ID":
+					return []tg.MessageClass{message(0, true)}, nil
+				case "boundary repeated":
+					return []tg.MessageClass{message(10, true)}, nil
+				default:
+					return []tg.MessageClass{message(12, true)}, nil
+				}
+			}}
+			if syncer.audit(context.Background()) == nil {
+				t.Fatal("expected failed audit")
+			}
+			st := store.Snapshot()
+			if st.Revision != before.Revision || st.AuditOffset != before.AuditOffset || len(st.Videos) != 1 {
+				t.Fatal("failed audit mutated the catalogue")
+			}
+		})
 	}
 }

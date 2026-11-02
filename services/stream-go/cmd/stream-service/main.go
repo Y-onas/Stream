@@ -165,10 +165,10 @@ func (s *service) connect(ctx context.Context, cfg config.Config, session, sourc
 	apply := func(message tg.MessageClass) error {
 		current := s.get()
 		if current != nil && matches(message, current.source) {
+			// Live changes are persisted directly; scheduled sync and gap callbacks reconcile history.
 			if err := s.store.Update(func(st *catalogue.State) error { catalogue.Upsert(st, message); return nil }); err != nil {
 				return err
 			}
-			notify()
 		}
 		return nil
 	}

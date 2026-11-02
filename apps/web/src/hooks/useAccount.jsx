@@ -1,15 +1,15 @@
 import {createContext,useContext,useEffect,useRef,useState} from 'react';
-import {api} from '../services/api.mjs';
+import {api,cacheMessage} from '../services/api.mjs';
 import {Link,navigate} from './useRoute';
 const Context=createContext(null);
 export function AccountProvider({children}){
   const [account,setAccount]=useState({user:null,membership:null,loading:true}),[platform,setPlatform]=useState(null),[library,setLibrary]=useState(null),[libraryError,setLibraryError]=useState('');
   const pending=useRef(new Set()),authVersion=useRef(0);
   async function refresh(){const version=++authVersion.current;try{const data=await api('/auth/me');if(version===authVersion.current)setAccount({...data,loading:false});return data;}catch(error){if(version===authVersion.current)setAccount({user:null,membership:null,loading:false,error:error.message});}}
-  useEffect(()=>{void refresh();const abort=new AbortController(),configuration=()=>api('/config',{signal:abort.signal}).then(data=>{setPlatform(data);document.title=data.platformName||'Habeshan HUB';}).catch(()=>{});void configuration();const timer=setInterval(configuration,15000),focus=()=>{setAccount(old=>({...old,loading:true}));void refresh();void configuration();};addEventListener('focus',focus);return()=>{abort.abort();clearInterval(timer);removeEventListener('focus',focus);};},[]);
+  useEffect(()=>{void refresh();const abort=new AbortController(),configuration=()=>api('/config',{signal:abort.signal}).then(data=>{setPlatform(data);document.title=data.platformName||'Habeshan HUB';}).catch(()=>{});void configuration();const timer=setInterval(configuration,15000),focus=()=>{void refresh();void configuration();};addEventListener('focus',focus);return()=>{abort.abort();clearInterval(timer);removeEventListener('focus',focus);};},[]);
   async function refreshLibrary(signal){if(!account.user)return;const userId=account.user.id;try{const data=await api('/me/library',{signal});if(data.userId!==userId){setLibrary(null);await refresh();return;}setLibrary(data);setLibraryError('');}catch(error){if(error.name!=='AbortError'){setLibraryError(error.message);if(error.status===401)void refresh();}}}
   useEffect(()=>{setLibrary(null);setLibraryError('');if(!account.user)return;const abort=new AbortController();void refreshLibrary(abort.signal);const timer=setInterval(()=>void refreshLibrary(abort.signal),15000),focus=()=>void refreshLibrary(abort.signal);addEventListener('focus',focus);return()=>{abort.abort();clearInterval(timer);removeEventListener('focus',focus);};},[account.user?.id]);
-  async function logout(){await api('/auth/logout',{method:'POST',json:{}});setLibrary(null);await refresh();}
+  async function logout(){await api('/auth/logout',{method:'POST',json:{}});setLibrary(null);await Promise.all([refresh(),cacheMessage({enabled:false,clear:true}).catch(()=>{})]);}
   const ownedLibrary=library?.userId===account.user?.id?library:null;
   async function toggleVideo(id,kind){
     if(account.loading)return;

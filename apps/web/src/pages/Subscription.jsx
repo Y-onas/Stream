@@ -3,7 +3,7 @@ import {api} from '../services/api.mjs';
 import {useAccount} from '../hooks/useAccount';
 import {Link,navigate} from '../hooks/useRoute';
 import {Icon} from '../components/Icons';
-const money=(amount,currency)=>new Intl.NumberFormat(undefined,{style:'currency',currency,maximumFractionDigits:2}).format(amount/100);
+const money=(amount,currency)=>new Intl.NumberFormat(undefined,{style:'currency',currency,minimumFractionDigits:2,maximumFractionDigits:2}).format(amount/100);
 export function PlansPage(){
   const account=useAccount(),[plans,setPlans]=useState(null),[error,setError]=useState('');
   useEffect(()=>{api('/plans').then(data=>setPlans(data.items)).catch(e=>setError(e.message));},[]);
