@@ -68,7 +68,7 @@ test('transient stream errors retry while cancellation stops further requests',a
 test('thumbnail API authenticates and validates catalogue identity before any extraction',async t=>{
   const calls=[];let state='pending',closed=false;
   const thumbnails={get(v,options){calls.push({v,options});return {status:state,bytes:jpeg};},close(){closed=true;}};
-  const handler=createAPI({streamOrigin:'http://private',streamToken:'s'.repeat(40),gatewayToken:'g'.repeat(40),thumbnails,fetcher:async()=>new Response(JSON.stringify({items:[video]}))});
+  const handler=createAPI({streamOrigin:'http://private',streamToken:'s'.repeat(40),gatewayToken:'g'.repeat(40),application:{close:async()=>{},handle:async()=>false,authorizeMedia:async(req,res,id)=>{if(id!==video.id)throw Object.assign(Error('Not found'),{status:404});return video;}},thumbnails,fetcher:async()=>new Response(JSON.stringify({items:[video]}))});
   const server=http.createServer(handler);server.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>{handler.close();server.closeAllConnections();server.close();assert.equal(closed,true);});
   const root=`http://127.0.0.1:${server.address().port}`,get=(path,options={})=>fetch(root+path,{...options,headers:{'x-gateway-token':'g'.repeat(40)}});
   assert.equal((await fetch(root+'/api/videos/channel-42-3/thumbnail')).status,401);

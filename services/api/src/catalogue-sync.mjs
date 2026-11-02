@@ -17,14 +17,14 @@ export async function importCatalogue(db,catalogue,now=new Date()){
   if(catalogue.sync?.initialComplete&&valid.length===catalogue.items.length)await db.video.updateMany({where:{id:{notIn:valid.map(v=>v.id)},available:true},data:{available:false}});
   return valid.length;
 }
-export function startCatalogueSync({db,streamOrigin,streamToken,fetcher=fetch,interval=15000,inspect=inspectDuration}){
+export function startCatalogueSync({db,streamOrigin,streamToken,grantFor,fetcher=fetch,interval=15000,inspect=inspectDuration}){
   const abort=new AbortController();let syncing=false,inspecting=false,closed=false,timer,inspectionWork=Promise.resolve(),syncWork=Promise.resolve();
   const state={ready:false,lastSuccess:null,error:null,source:null};
   async function durations(){
     if(inspecting||closed)return;inspecting=true;
     try{
       const rows=await db.video.findMany({where:{available:true,durationSeconds:null,OR:[{inspectionAttemptedAt:null},{inspectionAttemptedAt:{lt:new Date(Date.now()-30*60000)}}]},orderBy:{uploadedAt:'desc'},take:10});
-      for(const row of rows){if(closed)break;await db.video.update({where:{id:row.id},data:{inspectionAttemptedAt:new Date()}});try{const seconds=await inspect({...row,sizeBytes:Number(row.sizeBytes)},{streamOrigin,streamToken,fetcher,signal:abort.signal});if(!closed){await db.video.update({where:{id:row.id},data:{durationSeconds:seconds,durationSource:'ffmpeg'}});console.log(JSON.stringify({event:'video_duration_measured',video:row.id,seconds}));}}catch{if(!closed)console.log(JSON.stringify({event:'video_duration_unavailable',video:row.id}));}}
+      for(const row of rows){if(closed)break;await db.video.update({where:{id:row.id},data:{inspectionAttemptedAt:new Date()}});try{const seconds=await inspect({...row,sizeBytes:Number(row.sizeBytes)},{streamOrigin,streamToken,grantFor,fetcher,signal:abort.signal});if(!closed){await db.video.update({where:{id:row.id},data:{durationSeconds:seconds,durationSource:'ffmpeg'}});console.log(JSON.stringify({event:'video_duration_measured',video:row.id,seconds}));}}catch{if(!closed)console.log(JSON.stringify({event:'video_duration_unavailable',video:row.id}));}}
     }finally{inspecting=false;}
   }
   async function cycle(){

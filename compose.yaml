@@ -17,9 +17,15 @@ services:
       STREAM_LISTEN: 0.0.0.0:8080
       SYNC_INTERVAL: ${SYNC_INTERVAL:-30s}
       STREAM_CONCURRENCY: ${STREAM_CONCURRENCY:-4}
+      PLAYBACK_PUBLIC_KEY_PATH: /run/secrets/playback-public.pem
+      PLAYBACK_CHECK_URL: http://api:3000/internal/playback/check
+      PLAYBACK_ISSUER: ${PLAYBACK_ISSUER:-habeshan-hub}
+      PLAYBACK_AUDIENCE: ${PLAYBACK_AUDIENCE:-habeshan-stream}
+      PLAYBACK_CHECK_INTERVAL: ${PLAYBACK_CHECK_INTERVAL:-15s}
     volumes:
       - telegram_session:/sessions
       - catalogue_state:/state
+      - ${PLAYBACK_PUBLIC_KEY_PATH:?required}:/run/secrets/playback-public.pem:ro
     networks: [runtime]
     healthcheck:
       test: [CMD, /usr/local/bin/stream-service, healthcheck]
@@ -57,6 +63,14 @@ services:
       EMAIL: ${EMAIL:-}
       USER_NAME: ${USER_NAME:-}
       DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-8}
+      PLAYBACK_PRIVATE_KEY_PATH: /run/secrets/playback-private.pem
+      PLAYBACK_PUBLIC_KEY_PATH: /run/secrets/playback-public.pem
+      PLAYBACK_GRANT_TTL_SECONDS: ${PLAYBACK_GRANT_TTL_SECONDS:-300}
+      PLAYBACK_ISSUER: ${PLAYBACK_ISSUER:-habeshan-hub}
+      PLAYBACK_AUDIENCE: ${PLAYBACK_AUDIENCE:-habeshan-stream}
+    volumes:
+      - ${PLAYBACK_PRIVATE_KEY_PATH:?required}:/run/secrets/playback-private.pem:ro
+      - ${PLAYBACK_PUBLIC_KEY_PATH:?required}:/run/secrets/playback-public.pem:ro
     depends_on:
       stream-go: {condition: service_healthy}
     networks: [runtime]

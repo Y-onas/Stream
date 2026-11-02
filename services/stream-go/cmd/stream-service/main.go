@@ -21,6 +21,7 @@ import (
 	"streamweb/internal/catalogue"
 	"streamweb/internal/config"
 	"streamweb/internal/discovery"
+	"streamweb/internal/playback"
 	"streamweb/internal/streaming"
 	login "streamweb/internal/telegram"
 	"strings"
@@ -35,12 +36,13 @@ type runtime struct {
 	ctx    context.Context
 }
 type service struct {
-	mu      sync.RWMutex
-	current *runtime
-	store   *catalogue.Store
-	token   string
-	slots   chan struct{}
-	poll    time.Duration
+	mu            sync.RWMutex
+	current       *runtime
+	store         *catalogue.Store
+	token         string
+	slots         chan struct{}
+	poll          time.Duration
+	authorization *playback.Verifier
 }
 
 func env(key, fallback string) string {
@@ -95,7 +97,18 @@ func (s *service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, prefix), "/stream")
-	record, ok := st.Videos[key]
+	ctx, finish, sourceKey, err := s.authorization.Open(r.Context(), w, r.Header.Get("X-Playback-Grant"), key)
+	if err != nil {
+		status := 401
+		var denied playback.Denied
+		if errors.As(err, &denied) {
+			status = denied.Status
+		}
+		respond(w, status, map[string]string{"message": "Playback authorization is unavailable or denied"})
+		return
+	}
+	defer finish()
+	record, ok := st.Videos[sourceKey]
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -112,7 +125,7 @@ func (s *service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		respond(w, 503, map[string]string{"message": "Stream capacity reached"})
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Hour)
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Hour)
 	defer cancel()
 	stop := context.AfterFunc(current.ctx, cancel)
 	defer stop()
@@ -289,7 +302,19 @@ func run() error {
 	if err != nil || concurrency < 1 || concurrency > 8 {
 		return errors.New("STREAM_CONCURRENCY must be 1..8")
 	}
-	s := &service{store: store, token: token, slots: make(chan struct{}, concurrency), poll: poll}
+	publicKey, err := os.ReadFile(env("PLAYBACK_PUBLIC_KEY_PATH", ".local/playback-public.pem"))
+	if err != nil {
+		return errors.New("playback public key is required")
+	}
+	checkInterval, err := time.ParseDuration(env("PLAYBACK_CHECK_INTERVAL", "15s"))
+	if err != nil || checkInterval < time.Second || checkInterval > 15*time.Second {
+		return errors.New("invalid playback verification interval")
+	}
+	verifier, err := playback.New(publicKey, env("PLAYBACK_ISSUER", "habeshan-hub"), env("PLAYBACK_AUDIENCE", "habeshan-stream"), env("PLAYBACK_CHECK_URL", "http://127.0.0.1:3000/internal/playback/check"), token, checkInterval)
+	if err != nil {
+		return err
+	}
+	s := &service{store: store, token: token, slots: make(chan struct{}, concurrency), poll: poll, authorization: verifier}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	address := env("STREAM_LISTEN", "127.0.0.1:8080")

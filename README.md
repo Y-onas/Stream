@@ -10,6 +10,7 @@ Use Node 22.12+ and the existing root `.env`. Keep the exact server variable `DA
 npm.cmd ci
 npm.cmd run db:generate
 npm.cmd run db:migrate
+node scripts/playback-keys.mjs
 npm.cmd run runtime:build
 npm.cmd run runtime:go
 ```
@@ -21,7 +22,7 @@ npm.cmd run runtime:api
 npm.cmd run dev
 ```
 
-Open [Habeshan HUB](http://127.0.0.1:5173). The Go service scans accessible history and maintains its resumable metadata checkpoint. Node imports that existing catalogue into PostgreSQL every 15 seconds. Stable video IDs, Telegram session reuse and original byte-range delivery remain unchanged. Source video files/chunks are not cached on VPS disk.
+Open [Habeshan HUB](http://127.0.0.1:5173). The Go service scans accessible history and maintains its resumable metadata checkpoint. Node imports that existing catalogue into PostgreSQL every 15 seconds. Internal video IDs, Telegram session reuse and original byte-range delivery are preserved. Public URLs now use opaque UUIDs. Source video files/chunks are not cached on VPS disk.
 
 For first Telegram login only, use `npm.cmd run go:build`, then `npm.cmd run stream -- -mode find`. Enter phone/code/password in that terminal. Stop the legacy streamer before starting the daemon with the same session. Local wrappers keep private generated service tokens in ignored `.local/runtime.json`.
 
@@ -31,7 +32,13 @@ The separate administrator application runs with `npm.cmd run dev:admin` at [the
 
 Guests see only Log in and Sign up. Signed-in profile identity, watched history, likes, watchlist and membership now use the authenticated account. See [profile implementation and checks](docs/account-profile.md). Legacy device records remain preserved and are not imported into accounts.
 
-## Module 4.2
+## Module 4.3 playback access
+
+[Implementation, tests and deployment report](docs/module43.md) describes per-video VIP/FREE classification, Node-issued RS256 grants, private Go verification, renewal and monitored active connections. Discovered videos default to VIP. Administrators can mark individual videos Free without changing their visibility. Free videos are public and excluded from VIP Trending. Existing global streaming-access settings are retained as legacy data; per-video policy now controls playback.
+
+Generate server keys before starting the API and Go service; the helper preserves existing keys and never edits `.env`. Production must mount the private key only into Node and the public key into both services. New grants and Range requests always recheck current access. Active connections have a hard lease deadline and periodic revocation checks; this cannot recall bytes already buffered by a browser. Deployed HTTPS/Coolify routing still needs verification on the actual VPS.
+
+## Module 4.2 administration
 
 [Administration and acceptance report](docs/module42.md) lists all seven management sections, role checks, API changes, tests and remaining deployment checks. Migration `202611020004_admin_management` is additive. Video overrides survive Telegram discovery; hiding blocks direct media URLs. Platform support, packages, registration and access settings persist in PostgreSQL. Database outages now fail media/catalogue access closed so hidden content cannot leak through the old fallback.
 

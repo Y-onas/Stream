@@ -7,6 +7,7 @@ export async function api(path,options={}) {
   if(!response.ok && response.status!==501)throw Object.assign(new Error(data.message || 'Something went wrong. Please try again.'),{status:response.status,code:data.code});
   return data;
 }
+// Retained for legacy diagnostics; runtime playback uses the authorization response.
 export const streamUrl=id=>`/api/videos/${encodeURIComponent(id)}/stream`;
 export async function startCache(){
   if(!('serviceWorker' in navigator))return false;

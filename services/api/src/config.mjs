@@ -1,7 +1,7 @@
 import {config as readDotenv} from 'dotenv';
 import {fileURLToPath} from 'node:url';
 const root=new URL('../../../',import.meta.url);
-const allowed=['DATA_BASE_URL','DATA_BASE_DIRECT_URL','MEMBERSHIP_CURRENCY','TELEGRAM_SUPPORT_USERNAME','CLERK_PUBLIC_KEY','EMAIL','USER_NAME','CLERK_SECRET_KEY','CLERK_JWT_KEY','CLERK_PUBLISHABLE_KEY','ADMIN_ORIGIN','APP_TIMEZONE','DATABASE_POOL_MAX','DATABASE_SSL_MODE'];
+const allowed=['DATA_BASE_URL','DATA_BASE_DIRECT_URL','MEMBERSHIP_CURRENCY','TELEGRAM_SUPPORT_USERNAME','CLERK_PUBLIC_KEY','EMAIL','USER_NAME','CLERK_SECRET_KEY','CLERK_JWT_KEY','CLERK_PUBLISHABLE_KEY','ADMIN_ORIGIN','APP_TIMEZONE','DATABASE_POOL_MAX','DATABASE_SSL_MODE','PLAYBACK_PRIVATE_KEY_PATH','PLAYBACK_PUBLIC_KEY_PATH','PLAYBACK_GRANT_TTL_SECONDS','PLAYBACK_ISSUER','PLAYBACK_AUDIENCE'];
 export function loadApplicationEnv(){
   const values={};
   for(const path of [new URL('.env',root),new URL('.local/module4.env',root)])readDotenv({path:fileURLToPath(path),processEnv:values,override:true,quiet:true});
@@ -18,7 +18,12 @@ export const applicationConfig=()=>({
   clerkPublishableKey:process.env.CLERK_PUBLIC_KEY||process.env.CLERK_PUBLISHABLE_KEY||'',
   bootstrapEmail:process.env.EMAIL||'',
   bootstrapName:process.env.USER_NAME||'',
-  publicOrigin:process.env.PUBLIC_ORIGIN
+  publicOrigin:process.env.PUBLIC_ORIGIN,
+  playbackPrivateKeyPath:process.env.PLAYBACK_PRIVATE_KEY_PATH||fileURLToPath(new URL('.local/playback-private.pem',root)),
+  playbackPublicKeyPath:process.env.PLAYBACK_PUBLIC_KEY_PATH||fileURLToPath(new URL('.local/playback-public.pem',root)),
+  playbackTTL:Number(process.env.PLAYBACK_GRANT_TTL_SECONDS||300),
+  playbackIssuer:process.env.PLAYBACK_ISSUER||'habeshan-hub',
+  playbackAudience:process.env.PLAYBACK_AUDIENCE||'habeshan-stream'
 });
 
 // Neon migrations need a session connection, while application queries keep pooling.

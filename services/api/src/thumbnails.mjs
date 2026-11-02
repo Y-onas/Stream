@@ -54,12 +54,12 @@ export async function openRangeSource(video,{readRange,signal,maxBytes=24*MiB,ma
   return {url:`http://127.0.0.1:${server.address().port}/${secret}`,stats,close(){signal.removeEventListener('abort',close);close();}};
 }
 
-export async function readVideoRange({fetcher,streamOrigin,streamToken,video,start,end,signal,identity}){
+export async function readVideoRange({fetcher,streamOrigin,streamToken,video,start,end,signal,identity,grantFor}){
   const readSignal=AbortSignal.any([signal,AbortSignal.timeout(22000)]);
   let response;
   for(let attempt=0;attempt<4;attempt++){
-    response=await fetcher(new URL(`/internal/videos/${encodeURIComponent(video.id)}/stream`,streamOrigin),{
-    headers:{Authorization:`Bearer ${streamToken}`,Range:`bytes=${start}-${end}`,...(identity?.etag?{'If-Range':identity.etag}:{})},
+    response=await fetcher(new URL(`/internal/videos/${encodeURIComponent(video.publicId||video.id)}/stream`,streamOrigin),{
+    headers:{Authorization:`Bearer ${streamToken}`,...(grantFor?{'X-Playback-Grant':await grantFor(video)}:{}),Range:`bytes=${start}-${end}`,...(identity?.etag?{'If-Range':identity.etag}:{})},
       signal:readSignal,redirect:'error'
     });
     if(![502,503,504].includes(response.status)||attempt===3)break;
@@ -102,7 +102,7 @@ export function sampleTimes(duration){
   return Number.isFinite(duration)&&duration>0?[duration*.15,duration*.4,duration*.65].map(n=>Math.round(Math.min(90,n)*100)/100):[90,30,5];
 }
 
-export function createThumbnailService({streamOrigin,streamToken,fetcher=(...args)=>fetch(...args),ffmpegPath=process.env.FFMPEG_PATH||'ffmpeg',extract=extractFrame,maxCacheBytes=16*MiB,ttl=30*60*1000,maxPending=64,maxBytes=24*MiB,maxRequests=48,jobTimeout=150000,attemptTimeout=45000,logger=event=>console.log(JSON.stringify(event))}){
+export function createThumbnailService({streamOrigin,streamToken,grantFor,fetcher=(...args)=>fetch(...args),ffmpegPath=process.env.FFMPEG_PATH||'ffmpeg',extract=extractFrame,maxCacheBytes=16*MiB,ttl=30*60*1000,maxPending=64,maxBytes=24*MiB,maxRequests=48,jobTimeout=150000,attemptTimeout=45000,logger=event=>console.log(JSON.stringify(event))}){
   const entries=new Map(),queue=[];let running=false,cacheBytes=0,closed=false,active;
   function remove(key){const entry=entries.get(key);if(entry?.bytes)cacheBytes-=entry.bytes.length;entries.delete(key);}
   function prune(){for(const [key,value] of entries)if(value.expires&&value.expires<=Date.now())remove(key);for(const [key,value] of entries){if(cacheBytes<=maxCacheBytes&&entries.size<=256)break;if(value.status!=='pending')remove(key);}}
@@ -112,7 +112,7 @@ export function createThumbnailService({streamOrigin,streamToken,fetcher=(...arg
       const entry=queue.shift();active=new AbortController();const timeout=setTimeout(()=>active.abort(),jobTimeout);let source,lastFailure;
       try{
         const identity={};
-        source=await openRangeSource(entry.video,{signal:active.signal,maxBytes,maxRequests,readRange:(start,end,signal)=>readVideoRange({fetcher,streamOrigin,streamToken,video:entry.video,start,end,signal,identity})});
+        source=await openRangeSource(entry.video,{signal:active.signal,maxBytes,maxRequests,readRange:(start,end,signal)=>readVideoRange({fetcher,streamOrigin,streamToken,video:entry.video,start,end,signal,identity,grantFor})});
         let bytes;
         for(const seconds of sampleTimes(entry.video.durationSeconds)){
           try{bytes=await extract(ffmpegPath,source.url,seconds,AbortSignal.any([active.signal,AbortSignal.timeout(attemptTimeout)]));break;}

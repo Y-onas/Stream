@@ -1,4 +1,4 @@
-> Current Module 4.2 updates administrator authorization to approved database emails and adds visibility, moderation and platform settings. See [the current implementation](../module42.md). Earlier foundation notes below retain their historical context.
+> Module 4.3 supersedes the historical media/playback routes below. Use `POST /api/playback/authorize`, `POST /api/playback/:id/renew`, and `GET/HEAD /api/playback/:id/stream` with the scoped grant cookie. Public video IDs are UUIDs; `/api/videos/:id/stream` is denied. Catalogue queries accept `access=VIP|FREE`. Comments are implemented; pagination returns `{available,items,total,nextOffset}`. Database failures fail closed. See [current playback contracts and deployment limits](../module43.md) and [current administration](../module42.md). Earlier foundation notes below retain their historical context.
 
 # Frontend-facing API contracts — Module 4.1
 

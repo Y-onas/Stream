@@ -1,10 +1,10 @@
 import {spawn} from 'node:child_process';
 import {openRangeSource,readVideoRange} from './thumbnails.mjs';
-export async function inspectDuration(video,{streamOrigin,streamToken,ffmpegPath=process.env.FFMPEG_PATH||'ffmpeg',fetcher=fetch,signal=new AbortController().signal}={}){
+export async function inspectDuration(video,{streamOrigin,streamToken,grantFor,ffmpegPath=process.env.FFMPEG_PATH||'ffmpeg',fetcher=fetch,signal=new AbortController().signal}={}){
   const controller=new AbortController(),stop=()=>controller.abort();signal.addEventListener('abort',stop,{once:true});if(signal.aborted)stop();
   const timer=setTimeout(stop,90000),identity={};let source;
   try{
-    source=await openRangeSource(video,{signal:controller.signal,maxBytes:16*1024*1024,maxRequests:48,readRange:(start,end,signal)=>readVideoRange({video,streamOrigin,streamToken,fetcher,start,end,signal,identity})});
+    source=await openRangeSource(video,{signal:controller.signal,maxBytes:16*1024*1024,maxRequests:48,readRange:(start,end,signal)=>readVideoRange({video,streamOrigin,streamToken,fetcher,start,end,signal,identity,grantFor})});
     return await new Promise((resolve,reject)=>{
       const child=spawn(ffmpegPath,['-hide_banner','-loglevel','info','-nostdin','-protocol_whitelist','http,tcp','-rw_timeout','22000000','-seekable','1','-multiple_requests','1','-probesize','2097152','-analyzeduration','3000000','-threads','1','-i',source.url,'-map','0:V:0','-frames:v','0','-an','-sn','-dn','-f','null','-'],{stdio:['ignore','ignore','pipe'],windowsHide:true});
       let output='',duration=null,settled=false;

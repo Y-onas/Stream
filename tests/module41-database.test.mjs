@@ -1,3 +1,4 @@
+import {scenarioClientFactory,testPlaybackConfig} from './helpers/playback-database.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -23,17 +24,19 @@ test('Module 4.1 PostgreSQL workflow and statistics in an isolated disposable sc
   const libraryMigration=await readFile(new URL('../services/api/prisma/migrations/202611020002_account_library/migration.sql',import.meta.url),'utf8');await control.query(libraryMigration.replace('BEGIN;',`BEGIN; SET LOCAL search_path="${schema}";`));
   const watchedMigration=await readFile(new URL('../services/api/prisma/migrations/202611020003_account_watched/migration.sql',import.meta.url),'utf8');await control.query(watchedMigration.replace('BEGIN;',`BEGIN; SET LOCAL search_path="${schema}";`));
   const adminMigration=await readFile(new URL('../services/api/prisma/migrations/202611020004_admin_management/migration.sql',import.meta.url),'utf8');await control.query(adminMigration.replace('BEGIN;',`BEGIN; SET LOCAL search_path="${schema}";`));
+  const accessMigration=await readFile(new URL('../services/api/prisma/migrations/202611020005_playback_access/migration.sql',import.meta.url),'utf8');await control.query(accessMigration.replace('BEGIN;',`BEGIN; SET LOCAL search_path="${schema}";`));
   db=createDatabase(process.env.DATA_BASE_URL,{schema});await seedPlans(db,'ETB');
   let clock=new Date('2026-11-02T09:00:00Z');
   const videos=[{id:'channel-99-1',title:'Test shorter video',filename:'shorter.mp4',sizeBytes:1000,mimeType:'video/mp4',uploadedAt:'2026-11-01T00:00:00Z',durationSeconds:900},{id:'channel-99-2',title:'Test longer video',filename:'longer.mkv',sizeBytes:2000,mimeType:'video/x-matroska',uploadedAt:'2026-11-02T00:00:00Z',durationSeconds:3000}];
   await importCatalogue(db,{items:videos,sync:{initialComplete:true}});await importCatalogue(db,{items:videos,sync:{initialComplete:true}});assert.equal(await db.video.count(),2);
+  await db.video.updateMany({data:{accessType:'FREE'}});
   const go=http.createServer((req,res)=>{if(req.url==='/internal/catalogue'){res.setHeader('Content-Type','application/json');return res.end(JSON.stringify({items:videos}));}if(req.url==='/readyz')return res.end('{}');res.writeHead(206,{'Content-Type':'video/mp4','Content-Range':'bytes 0-3/1000','Content-Length':'4'});res.end(Buffer.alloc(4));});go.listen(0,'127.0.0.1');await once(go,'listening');servers.push(go);
-  const config={currency:'ETB',supportUsername:'example_human',timezone:'Africa/Nairobi',adminOrigin:'http://admin.test',clerkPublishableKey:'',adminIds:[]};
+  const config={...testPlaybackConfig(),currency:'ETB',supportUsername:'example_human',timezone:'Africa/Nairobi',adminOrigin:'http://admin.test',clerkPublishableKey:'',adminIds:[]};
   const adminAuth=async req=>{if(req.headers.authorization!=='Bearer test-administrator')throw new HttpError(401,'Sign in as administrator.');return{id:'clerk-test-administrator'};};
   const app=createApplication({db,config,now:()=>new Date(clock),adminAuth});
   const handler=createAPI({streamOrigin:`http://127.0.0.1:${go.address().port}`,streamToken:'s'.repeat(40),gatewayToken:'g'.repeat(40),publicOrigin:'http://viewer.test',application:app,thumbnails:{get:()=>({status:'unavailable'}),close(){}}});
   const server=http.createServer(handler);server.listen(0,'127.0.0.1');await once(server,'listening');servers.push(server);const root=`http://127.0.0.1:${server.address().port}`;
-  function client(admin=false){const jar=new Map();let csrf='';return {async call(path,{method='GET',data,headers={}}={}){const response=await fetch(root+path,{method,headers:{'X-Gateway-Token':'g'.repeat(40),Origin:admin?config.adminOrigin:'http://viewer.test',...(admin?{Authorization:'Bearer test-administrator'}:{}),Cookie:[...jar].map(([k,v])=>`${k}=${v}`).join(';'),...(csrf?{'X-CSRF-Token':csrf}:{}),...(data?{'Content-Type':'application/json'}:{}),...headers},...(data?{body:JSON.stringify(data)}:{})});for(const c of response.headers.getSetCookie()){const [pair]=c.split(';'),index=pair.indexOf('=');jar.set(pair.slice(0,index),pair.slice(index+1));}let body;try{body=await response.json();}catch{}if(body?.csrfToken)csrf=body.csrfToken;return{status:response.status,body};}};}
+  const scenarioClient=await scenarioClientFactory(db,root);const client=admin=>scenarioClient(admin?'test-administrator':undefined);
   const visitor=client(),buyer=client(),racer=client(),admin=client(true);
   assert.equal((await visitor.call('/api/videos')).status,200);assert.equal((await visitor.call('/api/auth/me')).body.user,null);
   assert.equal((await visitor.call('/api/admin/overview')).status,403);
