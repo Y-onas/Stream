@@ -1,0 +1,9 @@
+reviews:
+  path_filters:
+    - "apps/**"
+    - "services/**"
+    - "packages/**"
+    - "!**/README.md"
+    - "!**/*_test.go"
+    - "!**/qa/**"
+    - "!**/*.html"

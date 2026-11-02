@@ -1,0 +1,102 @@
+name: habeshan-hub
+services:
+  stream-go:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/stream.Dockerfile
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 20s
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:?required}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:?required}
+      TELEGRAM_SOURCE: ${TELEGRAM_SOURCE:-Stream Test}
+      TELEGRAM_SESSION_PATH: /sessions/telegram.session.json
+      CATALOGUE_PATH: /state/catalogue.json
+      STREAM_SERVICE_TOKEN: ${STREAM_SERVICE_TOKEN:?required}
+      STREAM_LISTEN: 0.0.0.0:8080
+      SYNC_INTERVAL: ${SYNC_INTERVAL:-30s}
+      STREAM_CONCURRENCY: ${STREAM_CONCURRENCY:-4}
+    volumes:
+      - telegram_session:/sessions
+      - catalogue_state:/state
+    networks: [runtime]
+    healthcheck:
+      test: [CMD, /usr/local/bin/stream-service, healthcheck]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: &logging
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+  api:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/api.Dockerfile
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 20s
+    environment:
+      NODE_ENV: production
+      API_HOST: 0.0.0.0
+      API_PORT: '3000'
+      STREAM_ORIGIN: http://stream-go:8080
+      STREAM_SERVICE_TOKEN: ${STREAM_SERVICE_TOKEN:?required}
+      API_GATEWAY_TOKEN: ${API_GATEWAY_TOKEN:?required}
+      PUBLIC_ORIGIN: https://${PUBLIC_HOST:?required}
+      DATA_BASE_URL: ${DATA_BASE_URL:?required}
+      DATA_BASE_DIRECT_URL: ${DATA_BASE_DIRECT_URL:-}
+      MEMBERSHIP_CURRENCY: ${MEMBERSHIP_CURRENCY:-ETB}
+      TELEGRAM_SUPPORT_USERNAME: ${TELEGRAM_SUPPORT_USERNAME:-}
+      APP_TIMEZONE: ${APP_TIMEZONE:-Africa/Nairobi}
+      ADMIN_ORIGIN: https://${PUBLIC_HOST:?required}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
+      CLERK_JWT_KEY: ${CLERK_JWT_KEY:-}
+      CLERK_PUBLIC_KEY: ${CLERK_PUBLIC_KEY:-}
+      CLERK_PUBLISHABLE_KEY: ${CLERK_PUBLISHABLE_KEY:-}
+      EMAIL: ${EMAIL:-}
+      USER_NAME: ${USER_NAME:-}
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-8}
+    depends_on:
+      stream-go: {condition: service_healthy}
+    networks: [runtime]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      start_period: 90s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: *logging
+  web:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/web.Dockerfile
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, wget, -q, --spider, http://127.0.0.1/healthz]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [runtime]
+    logging: *logging
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:?required}
+      API_GATEWAY_TOKEN: ${API_GATEWAY_TOKEN:?required}
+    ports: ['80:80','443:443']
+    volumes:
+      - ./infrastructure/docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [web, api]
+    networks: [runtime]
+    logging: *logging
+networks:
+  runtime:
+volumes:
+  telegram_session:
+  catalogue_state:
+  caddy_data:
+  caddy_config:

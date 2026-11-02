@@ -13,3 +13,9 @@ bin/
 *.test
 *.log
 coverage.out
+node_modules/
+dist/
+.local/
+test-results/
+playwright-report/
+*.tsbuildinfo

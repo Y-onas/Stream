@@ -1,0 +1,14 @@
+.git
+.env
+.env.*
+.sessions
+.local
+.tools
+node_modules
+**/node_modules
+**/dist
+bin
+*.log
+test-results
+**/qa
+**/qa.html

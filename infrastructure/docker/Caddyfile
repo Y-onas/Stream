@@ -1,0 +1,19 @@
+{$PUBLIC_HOST} {
+  # Public browsing is anonymous. Account and admin routes authorize in Node.
+  log {
+    output stdout
+    format json
+  }
+  @api path /api/*
+  handle @api {
+    reverse_proxy api:3000 {
+      header_up X-Gateway-Token {$API_GATEWAY_TOKEN}
+      header_up X-Client-IP {remote_host}
+      flush_interval -1
+    }
+  }
+  redir /admin /admin/
+  handle {
+    reverse_proxy web:80
+  }
+}

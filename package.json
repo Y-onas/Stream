@@ -1,0 +1,33 @@
+{
+  "name": "phonofilm",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/web",
+    "apps/admin",
+    "services/api"
+  ],
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "npm run dev --workspace @phonofilm/web",
+    "dev:admin": "npm run dev --workspace @phonofilm/admin",
+    "build": "npm run build --workspace @phonofilm/web && npm run build --workspace @phonofilm/admin",
+    "test": "node --test tests/*.test.mjs",
+    "go:test": "node scripts/go.mjs test",
+    "go:build": "node scripts/go.mjs build",
+    "stream": "node scripts/go.mjs run",
+    "runtime:build": "node scripts/runtime.mjs build",
+    "runtime:go": "node scripts/runtime.mjs go",
+    "runtime:api": "node scripts/runtime.mjs api",
+    "db:inspect": "node scripts/db-inspect.mjs",
+    "db:generate": "prisma generate --config services/api/prisma.config.ts",
+    "db:migrate": "node scripts/db-migrate.mjs",
+    "test:database": "node scripts/test-database.mjs"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.2.4"
+  }
+}

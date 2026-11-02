@@ -1,0 +1,14 @@
+:80 {
+  respond /healthz 200
+  handle_path /admin/* {
+    root * /srv/admin
+    try_files {path} /index.html
+    file_server
+  }
+  handle {
+    root * /srv/web
+    try_files {path} /index.html
+    header /sw.js Cache-Control no-cache
+    file_server
+  }
+}
