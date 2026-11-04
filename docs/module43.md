@@ -1,5 +1,7 @@
 # Module 4.3 — Video access and renewable streaming
 
+This is the historical Module 4.3 report. [Module 5](module5.md) supersedes its session limits, key-rotation support, outage policy, callback timing and subsequent security/testing results.
+
 Implemented November 2, 2026. This extends the existing application; it reuses normal-user sessions, manual subscription approval, administrator roles/auditing, qualified-view rules, Prisma/PostgreSQL, Telegram discovery, gotd retrieval and the original exact HTTP Range handler.
 
 ## Behaviour and data

@@ -37,7 +37,7 @@ JSON bodies are bounded to 16 KiB. User sessions are opaque HttpOnly cookies, Se
 
 ## Administrator API
 
-Except public publishable configuration, all `/api/admin/*` routes require a signed Clerk bearer token, exact administrator origin, explicit trusted Clerk user ID and Google-connected account. Missing credentials fail closed. Live Clerk configuration/acceptance is deferred to Module 4.2 per the user.
+Except public publishable configuration, all `/api/admin/*` routes require a signed Clerk bearer token, exact administrator origin, explicit trusted Clerk user ID and Google-connected account. Missing credentials fail closed. The backend uses the official Clerk verifier, checks live session status, verifies the Google identity and loads the active administrator role from PostgreSQL on every protected request. Linked Clerk IDs take precedence over email bootstrap. Pending sessions are rejected; enrolled OWNER MFA requires signed second-factor evidence. See [security verification](../admin-access-security.md).
 
 | Request | Behavior |
 | --- | --- |

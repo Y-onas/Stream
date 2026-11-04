@@ -33,7 +33,10 @@ test('Module 4.3: PostgreSQL + Node-signed grants + actual Go verifier and Range
  const child=spawn(fixture,['-check-url',origin+'/internal/playback/check','-public-key',publicPath,'-part-delay','15ms'],{env:{...process.env,STREAM_SERVICE_TOKEN:'s'.repeat(40)},stdio:['ignore','pipe','pipe'],windowsHide:true});
  t.after(()=>{child.kill();});goOrigin=await new Promise((resolve,reject)=>{let text='';child.once('error',reject);child.stdout.on('data',data=>{text+=data;const line=text.split('\n')[0].trim();if(/^http:\/\/127\.0\.0\.1:\d+$/.test(line))resolve(line);});child.once('exit',code=>reject(Error('Go fixture exited: '+code)));});
  const visitor=httpClient(origin),buyer=httpClient(origin),admin=httpClient(origin,{admin:true});let approvedMembership;
- const authorize=(client,video)=>client.call('/api/playback/authorize',{method:'POST',data:{videoId:video.publicId,position:0}});
+ // These earlier scenarios run one playback per client at a time. End each
+ // previous ticket explicitly; Module 5 separately tests simultaneous sessions.
+ const priorGrants=new WeakMap();
+ const authorize=async(client,video,{preserveClock=false}={})=>{if(!preserveClock)clock=new Date();const prior=priorGrants.get(client);if(prior)await client.call(`/api/playback/${prior}/terminate`,{method:'POST',data:{}});const result=await client.call('/api/playback/authorize',{method:'POST',data:{videoId:video.publicId,position:0}});if(result.status===201)priorGrants.set(client,result.body.id);return result;};
  const videoEdit=async(video,changes)=>{const current=(await admin.call(`/api/admin/videos/${video.id}`)).body;const result=await admin.call(`/api/admin/videos/${video.id}`,{method:'POST',data:{version:current.version,title:current.titleOverride,description:current.descriptionOverride,published:current.published,unavailable:current.adminUnavailable,accessType:current.accessType,reason:'Isolated Module 4.3 validation',...changes}});assert.equal(result.status,200,JSON.stringify(result.body));return result.body;};
 
  await t.test('public metadata is opaque; anonymous Free access works and VIP is denied',async()=>{
@@ -82,7 +85,8 @@ test('Module 4.3: PostgreSQL + Node-signed grants + actual Go verifier and Range
   const grant=(await authorize(buyer,vip)).body,response=await buyer.request(grant.streamUrl),reader=response.body.getReader();assert.equal(response.status,200);await reader.read();
   const revoke=await admin.call(`/api/admin/memberships/${approvedMembership.id}/revoke`,{method:'POST',data:{note:'Disposable revocation during open connection'}});assert.equal(revoke.status,200);
   await assert.rejects(async()=>{while(!(await reader.read()).done){}});
-  assert.equal((await buyer.call(grant.streamUrl,{headers:{Range:'bytes=0-10'}})).status,403);assert.equal((await buyer.call(`/api/playback/${grant.id}/renew`,{method:'POST',data:{}})).status,403);
+  // The active check has already persisted the denial and released this slot.
+  const denied=await buyer.call(grant.streamUrl,{headers:{Range:'bytes=0-10'}});assert.equal(denied.status,401);assert.equal(denied.body.code,'PLAYBACK_SESSION_REVOKED');assert.equal((await buyer.call(`/api/playback/${grant.id}/renew`,{method:'POST',data:{}})).status,410);
  });
  await t.test('membership expiry caps the lease and suspension/logout stop protected sessions',async()=>{
   // Leave room for hosted DB setup; expiry is explicitly advanced after the
@@ -92,11 +96,11 @@ test('Module 4.3: PostgreSQL + Node-signed grants + actual Go verifier and Range
   const grant=await authorize(buyer,vip);assert.equal(grant.status,201);assert.ok(Date.parse(grant.body.expiresAt)<=+expiresAt);
   const response=await buyer.request(grant.body.streamUrl),reader=response.body.getReader();assert.equal(response.status,200);await reader.read();
   // Clock advances for Node's membership policy; Go also enforces the signed lease deadline.
-  clock=new Date(+expiresAt+1);await assert.rejects(async()=>{while(!(await reader.read()).done){}});assert.equal((await authorize(buyer,vip)).status,403);
+  clock=new Date(+expiresAt+1);await assert.rejects(async()=>{while(!(await reader.read()).done){}});assert.equal((await authorize(buyer,vip,{preserveClock:true})).status,403);
   clock=new Date();await db.membership.update({where:{id:member.id},data:{expiresAt:new Date(Date.now()+600000)}});
   const active=(await authorize(buyer,vip)).body;await db.user.update({where:{id:user.id},data:{status:'SUSPENDED'}});assert.equal((await buyer.call(active.streamUrl,{headers:{Range:'bytes=0-10'}})).status,403);
   assert.equal((await authorize(visitor,free)).status,201);await db.user.update({where:{id:user.id},data:{status:'ACTIVE'}});
-  assert.equal((await buyer.call('/api/auth/logout',{method:'POST',data:{}})).status,200);assert.equal((await buyer.call(active.streamUrl,{headers:{Range:'bytes=0-10'}})).status,403);
+  assert.equal((await buyer.call('/api/auth/logout',{method:'POST',data:{}})).status,200);assert.equal((await buyer.call(active.streamUrl,{headers:{Range:'bytes=0-10'}})).status,401);
  });
  console.log(JSON.stringify({event:'module43_acceptance_finished',isolatedSchema:true,actualGoVerifier:true,syntheticMedia:true}));
 });

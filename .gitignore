@@ -6,6 +6,7 @@
 *.session.*
 *.session.json
 *.session.json.*
+*.pem
 .session-*
 .tools/
 bin/

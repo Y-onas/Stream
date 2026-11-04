@@ -70,10 +70,6 @@ func main() {
 			panic("invalid disposable fixture")
 		}
 	}
-	stream, err := streaming.NewHandler(provider{data: data, delay: *partDelay}, streaming.HTTPOptions{TrustedInternal: true, MessageID: 7, ChunkSize: 4096, Concurrency: 4, RequestTimeout: time.Minute, WriteTimeout: time.Second})
-	if err != nil {
-		panic(err)
-	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+token)) != 1 {
 			w.WriteHeader(401)
@@ -95,6 +91,13 @@ func main() {
 			return
 		}
 		defer stop()
+		// Match production: buffers and handler concurrency belong to one HTTP
+		// request, rather than imposing a global viewer limit in the fixture.
+		stream, err := streaming.NewHandler(provider{data: data, delay: *partDelay}, streaming.HTTPOptions{TrustedInternal: true, MessageID: 7, ChunkSize: 4096, Concurrency: 1, RequestTimeout: time.Minute, WriteTimeout: time.Second})
+		if err != nil {
+			w.WriteHeader(500)
+			return
+		}
 		request := r.Clone(ctx)
 		u := *r.URL
 		request.URL = &u

@@ -53,6 +53,9 @@ model ViewerSession {
   @@map("hh_viewer_sessions")
 }
 model Video {
+  sourceStatus String @default("AVAILABLE")
+  sourceRetryAt DateTime? @db.Timestamptz(3)
+  sourceFailures Int @default(0)
   id String @id
   publicId String @unique @default(uuid()) @db.Uuid
   accessType String @default("VIP")
@@ -122,6 +125,13 @@ model WatchedVideo {
   @@map("hh_watched_videos")
 }
 model PlaybackSession {
+  state String @default("BUFFERING")
+  reservedUntil DateTime? @db.Timestamptz(3)
+  pauseStartedAt DateTime? @db.Timestamptz(3)
+  requestKey String? @unique @db.Uuid
+  clientLabel String? @db.VarChar(100)
+  progressUpdatedAt DateTime? @db.Timestamptz(3)
+  lastError String? @db.VarChar(80)
   id String @id @default(uuid()) @db.Uuid
   videoId String
   video Video @relation(fields:[videoId],references:[id],onDelete:Cascade)
@@ -141,9 +151,12 @@ model PlaybackSession {
   authorizedUntil DateTime? @db.Timestamptz(3)
   revokedAt DateTime? @db.Timestamptz(3)
   @@index([expiresAt])
+  @@index([accountSessionId])
+  @@index([userId,videoId,progressUpdatedAt])
   @@map("hh_playback_sessions")
 }
 model VideoView {
+  playbackSessionId String? @unique @db.Uuid
   id String @id @default(uuid()) @db.Uuid
   videoId String
   video Video @relation(fields:[videoId],references:[id],onDelete:Restrict)
@@ -263,6 +276,11 @@ model Administrator {
   @@map("hh_administrators")
 }
 model PlatformSettings {
+  // Historical capacity settings retained for existing data/migrations only.
+  // Neither global field participates in playback or upstream admission.
+  playbackLimit Int @default(0)
+  upstreamLimit Int @default(0)
+  sessionUpstreamLimit Int @default(2)
   id String @id @default("platform")
   platformName String @default("Habeshan HUB") @db.VarChar(80)
   defaultCurrency String @default("ETB") @db.VarChar(3)
@@ -297,4 +315,28 @@ model Comment {
   @@index([userId,createdAt])
   @@index([status,createdAt])
   @@map("hh_comments")
+}
+
+model UpstreamLease {
+  id String @id @db.Uuid
+  contextId String
+  playbackSessionId String? @db.Uuid
+  kind String @default("MEDIA")
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  expiresAt DateTime @db.Timestamptz(3)
+  @@index([expiresAt])
+  @@index([contextId,expiresAt])
+  @@map("hh_upstream_leases")
+}
+
+model SecurityEvent {
+  key String @id
+  kind String @db.VarChar(60)
+  count Int @default(1)
+  firstSeenAt DateTime @db.Timestamptz(3)
+  lastSeenAt DateTime @db.Timestamptz(3)
+  sessionId String? @db.Uuid
+  userId String? @db.Uuid
+  @@index([lastSeenAt])
+  @@map("hh_security_events")
 }

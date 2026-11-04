@@ -58,3 +58,24 @@ func TestMalformedDotenvDoesNotLeak(t *testing.T) {
 		t.Fatal("unsafe dotenv error")
 	}
 }
+
+func TestRuntimeRequiresFourValuesAndChecksAccount(t *testing.T) {
+	hash := strings.Repeat("b", 32)
+	for _, tc := range []struct{ id, hash, source, user, field string }{
+		{"", hash, "Channel", "fixture_user", "TELEGRAM_API_ID"},
+		{"123", "", "Channel", "fixture_user", "TELEGRAM_API_HASH"},
+		{"123", hash, "", "fixture_user", "TELEGRAM_SOURCE"},
+		{"123", hash, "Channel", "", "USER_NAME"},
+		{"123", hash, "Channel\nsecret-input", "fixture_user", "TELEGRAM_SOURCE"},
+		{"123", hash, "Channel", "secret-input", "USER_NAME"},
+	} {
+		_, err := ValidateRuntime(tc.id, tc.hash, tc.source, tc.user)
+		if err == nil || !strings.Contains(err.Error(), tc.field) || strings.Contains(err.Error(), "secret-input") {
+			t.Fatalf("unsafe or missing field validation: %v", err)
+		}
+	}
+	cfg, err := ValidateRuntime("123", hash, "  የፊልም Channel  ", " @Fixture_User ")
+	if err != nil || cfg.Source != "የፊልም Channel" || cfg.Username != "Fixture_User" || !cfg.MatchesUsername("fixture_user") || cfg.MatchesUsername("different_user") {
+		t.Fatal("source/account normalization or binding failed")
+	}
+}

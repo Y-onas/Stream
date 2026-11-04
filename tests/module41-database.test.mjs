@@ -14,7 +14,9 @@ import {seedPlans} from '../services/api/prisma/seed.mjs';
 import {importCatalogue} from '../services/api/src/catalogue-sync.mjs';
 import {HttpError} from '../services/api/src/domain.mjs';
 
-test('Module 4.1 PostgreSQL workflow and statistics in an isolated disposable schema',{skip:process.env.RUN_DB_TESTS!=='1',timeout:300000},async t=>{
+// This end-to-end regression makes many sequential remote DB requests. Its
+// test deadline does not change the application's bounded query/HTTP deadlines.
+test('Module 4.1 PostgreSQL workflow and statistics in an isolated disposable schema',{skip:process.env.RUN_DB_TESTS!=='1',timeout:600000},async t=>{
   const schema=`hh_test_${randomBytes(8).toString('hex')}`;
   assert.match(schema,/^hh_test_[a-f0-9]{16}$/);
   const control=new pg.Client({connectionString:process.env.DATA_BASE_URL,connectionTimeoutMillis:10000});await control.connect();await control.query(`CREATE SCHEMA "${schema}"`);
@@ -25,6 +27,7 @@ test('Module 4.1 PostgreSQL workflow and statistics in an isolated disposable sc
   const watchedMigration=await readFile(new URL('../services/api/prisma/migrations/202611020003_account_watched/migration.sql',import.meta.url),'utf8');await control.query(watchedMigration.replace('BEGIN;',`BEGIN; SET LOCAL search_path="${schema}";`));
   const adminMigration=await readFile(new URL('../services/api/prisma/migrations/202611020004_admin_management/migration.sql',import.meta.url),'utf8');await control.query(adminMigration.replace('BEGIN;',`BEGIN; SET LOCAL search_path="${schema}";`));
   const accessMigration=await readFile(new URL('../services/api/prisma/migrations/202611020005_playback_access/migration.sql',import.meta.url),'utf8');await control.query(accessMigration.replace('BEGIN;',`BEGIN; SET LOCAL search_path="${schema}";`));
+  const lifecycleMigration=await readFile(new URL('../services/api/prisma/migrations/202611020006_session_lifecycle/migration.sql',import.meta.url),'utf8');await control.query(lifecycleMigration.replace('BEGIN;',`BEGIN; SET LOCAL search_path="${schema}";`));
   db=createDatabase(process.env.DATA_BASE_URL,{schema});await seedPlans(db,'ETB');
   let clock=new Date('2026-11-02T09:00:00Z');
   const videos=[{id:'channel-99-1',title:'Test shorter video',filename:'shorter.mp4',sizeBytes:1000,mimeType:'video/mp4',uploadedAt:'2026-11-01T00:00:00Z',durationSeconds:900},{id:'channel-99-2',title:'Test longer video',filename:'longer.mkv',sizeBytes:2000,mimeType:'video/x-matroska',uploadedAt:'2026-11-02T00:00:00Z',durationSeconds:3000}];
@@ -43,7 +46,12 @@ test('Module 4.1 PostgreSQL workflow and statistics in an isolated disposable sc
   assert.equal((await admin.call('/api/admin/overview',{headers:{Authorization:''}})).status,401);
   const plans=(await visitor.call('/api/plans')).body.items;assert.deepEqual(plans.map(p=>[p.name,p.priceMinor,p.currency]),[['Monthly',99000,'ETB'],['Yearly',299000,'ETB'],['Long-term',600000,'ETB']]);
   const credentials={username:'ModuleTestBuyer',password:'This is a strong test password'};
-  const registration=await Promise.all([buyer.call('/api/auth/register',{method:'POST',data:credentials}),racer.call('/api/auth/register',{method:'POST',data:{...credentials,username:'moduletestbuyer'}})]);assert.deepEqual(registration.map(r=>r.status).sort(),[201,409]);
+  const registration=await Promise.all([buyer.call('/api/auth/register',{method:'POST',data:credentials}),racer.call('/api/auth/register',{method:'POST',data:{...credentials,username:'moduletestbuyer'}})]);
+  // Password work has a one-job memory bound. A racing signup may receive a
+  // controlled busy response; once the first completes, retry must still
+  // enforce the database's case-insensitive username uniqueness.
+  for(let i=0;i<registration.length;i++)if(registration[i].status===503)registration[i]=await [buyer,racer][i].call('/api/auth/register',{method:'POST',data:credentials});
+  assert.deepEqual(registration.map(r=>r.status).sort(),[201,409]);
   assert.equal((await buyer.call('/api/auth/login',{method:'POST',data:{...credentials,username:'MODULETESTBUYER'}})).status,200);
   assert.equal((await buyer.call('/api/auth/login',{method:'POST',data:{...credentials,password:'An incorrect test password'}})).status,401);
   assert.equal((await visitor.call('/api/auth/username?username=moduletestbuyer')).body.available,false);

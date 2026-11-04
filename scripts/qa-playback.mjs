@@ -27,6 +27,7 @@ const config={currency:'ETB',timezone:'Africa/Nairobi',supportUsername:'',adminO
 await seedPlans(db,'ETB');await bootstrapAdministration(db,config);
 const size=(await readFile(media)).length,jpeg=await readFile(image);
 const vip=await db.video.create({data:{id:'qa-vip',title:'Disposable VIP playback test',filename:'disposable.mp4',mimeType:'video/mp4',sizeBytes:size,uploadedAt:new Date(),durationSeconds:65,accessType:'VIP'}});
+const vip2=await db.video.create({data:{id:'qa-vip-2',title:'Disposable second VIP playback test',filename:'disposable.mp4',mimeType:'video/mp4',sizeBytes:size,uploadedAt:new Date(),durationSeconds:65,accessType:'VIP'}});
 const free=await db.video.create({data:{id:'qa-free',title:'Disposable Free playback test',filename:'disposable.mp4',mimeType:'video/mp4',sizeBytes:size,uploadedAt:new Date(),durationSeconds:65,accessType:'FREE'}});
 const user=await db.user.create({data:{username:'DisposableVIP',usernameCanonical:'disposablevip',displayName:'Disposable VIP test user',passwordHash:await hashPassword(token())}});
 await db.membership.create({data:{userId:user.id,planId:'monthly',planName:'Disposable test membership',durationMonths:1,amountMinor:99000,currency:'ETB',activatedAt:new Date(),expiresAt:new Date(Date.now()+3600000),approvedByAdminId:'qa-owner',source:'MANUAL'}});
@@ -44,7 +45,7 @@ const qa={name:'isolated-playback-qa',transformIndexHtml(html){return html.repla
  }next();});vite.middlewares.use(runtimeProxy({origin:'http://localhost:5183'}));}};
 const vite=await viteServer({configFile:false,root:path.resolve('apps/web'),plugins:[react(),qa],envDir:false,server:{host:'127.0.0.1',port:5183,strictPort:true,cors:false,fs:{strict:true,allow:[path.resolve('apps/web'),path.resolve('node_modules')],deny:['**/.env*','**/.sessions/**','**/.local/**','**/services/**','**/.git/**']}}});await vite.listen();
 cleanups.push(()=>vite.close());
-await writeFile(path.join(directory,'state.json'),JSON.stringify({origin:'http://localhost:5183',schema:db.appSchema,vip:vip.publicId,free:free.publicId}));
+await writeFile(path.join(directory,'state.json'),JSON.stringify({origin:'http://localhost:5183',schema:db.appSchema,vip:vip.publicId,vip2:vip2.publicId,free:free.publicId}));
 console.log(JSON.stringify({event:'module43_browser_qa_ready',origin:'http://localhost:5183',syntheticMedia:true,isolatedDatabase:true}));
 let closing=false;async function close(){if(closing)return;closing=true;for(const cleanup of cleanups.reverse())await cleanup();console.log('Disposable playback QA data removed.');process.exit(0);}
 process.on('SIGINT',()=>void close());process.on('SIGTERM',()=>void close());

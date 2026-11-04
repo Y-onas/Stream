@@ -9,7 +9,9 @@ export function AccountProvider({children}){
   useEffect(()=>{void refresh();const abort=new AbortController(),configuration=()=>api('/config',{signal:abort.signal}).then(data=>{setPlatform(data);document.title=data.platformName||'Habeshan HUB';}).catch(()=>{});void configuration();const timer=setInterval(configuration,15000),focus=()=>{void refresh();void configuration();};addEventListener('focus',focus);return()=>{abort.abort();clearInterval(timer);removeEventListener('focus',focus);};},[]);
   async function refreshLibrary(signal){if(!account.user)return;const userId=account.user.id;try{const data=await api('/me/library',{signal});if(data.userId!==userId){setLibrary(null);await refresh();return;}setLibrary(data);setLibraryError('');}catch(error){if(error.name!=='AbortError'){setLibraryError(error.message);if(error.status===401)void refresh();}}}
   useEffect(()=>{setLibrary(null);setLibraryError('');if(!account.user)return;const abort=new AbortController();void refreshLibrary(abort.signal);const timer=setInterval(()=>void refreshLibrary(abort.signal),15000),focus=()=>void refreshLibrary(abort.signal);addEventListener('focus',focus);return()=>{abort.abort();clearInterval(timer);removeEventListener('focus',focus);};},[account.user?.id]);
-  async function logout(){await api('/auth/logout',{method:'POST',json:{}});setLibrary(null);setLogoutWarning('');const [,warning]=await Promise.all([refresh(),clearCacheAfterLogout()]);setLogoutWarning(warning);}
+  async function finishLogout(){setLibrary(null);setLogoutWarning('');const [,warning]=await Promise.all([refresh(),clearCacheAfterLogout()]);setLogoutWarning(warning);}
+  async function logout({everywhere=false}={}){await api(everywhere?'/auth/logout-everywhere':'/auth/logout',{method:'POST',json:{}});await finishLogout();}
+  async function changePassword(json){await api('/auth/password',{method:'POST',json});await finishLogout();}
   const ownedLibrary=library?.userId===account.user?.id?library:null;
   async function toggleVideo(id,kind){
     if(account.loading)return;
@@ -18,7 +20,7 @@ export function AccountProvider({children}){
     const key=`${account.user.id}:${kind}:${id}`;if(pending.current.has(key))return;pending.current.add(key);setLibraryError('');
     try{const selected=!(kind==='liked'?ownedLibrary.likedIds:ownedLibrary.savedIds).includes(id);await api(`/me/videos/${encodeURIComponent(id)}/${kind}`,{method:'POST',json:{selected}});await refreshLibrary();}catch(error){setLibraryError(error.message);if(error.status===401)void refresh();}finally{pending.current.delete(key);}
   }
-  return <Context.Provider value={{...account,platform,refresh,logout,logoutWarning,library:ownedLibrary,libraryError,refreshLibrary,toggleVideo}}>{children}</Context.Provider>;
+  return <Context.Provider value={{...account,platform,refresh,logout,changePassword,logoutWarning,library:ownedLibrary,libraryError,refreshLibrary,toggleVideo}}>{children}</Context.Provider>;
 }
 export const useAccount=()=>useContext(Context);
 export function AccountRequired(){

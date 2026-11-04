@@ -1,3 +1,9 @@
+> First deployment preparation now supersedes earlier deployment/bootstrap descriptions: [current guide](first-production-deployment.md). Use `compose.coolify.yaml` alone. `USER_NAME` is Telegram account configuration; migrations do not run on API startup. Prior test results below describe their dated local verification.
+
+# Current route/security update
+
+Administrator routes are now `/hub-console` and `/hub-console/login`; legacy frontend URLs return a plain 404 without disclosing the console path. The [current security report](admin-access-security.md) supersedes earlier route and authentication descriptions below. Historical test results remain dated evidence.
+
 # Module 4.2 — Administration, platform controls and analytics
 
 Implemented on 2026-11-02 as an extension of Module 4.1. The existing React applications, Node/Prisma/PostgreSQL service, Go/gotd discovery/session/checkpoint, qualified-view tracking and original HTTP Range path are reused. No second Telegram client, video disk cache, movie metadata service, bot or automatic payment collector was introduced.

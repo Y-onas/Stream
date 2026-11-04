@@ -1,6 +1,7 @@
 import {randomBytes,createHash,scrypt as scryptCallback,timingSafeEqual} from 'node:crypto';
 import {promisify} from 'node:util';
-const scrypt=promisify(scryptCallback);
+const rawScrypt=promisify(scryptCallback);let cryptoWork=0;
+async function scrypt(...args){if(cryptoWork)throw new HttpError(503,'Account security is busy. Please try again shortly.');cryptoWork++;try{return await rawScrypt(...args);}finally{cryptoWork--;}}
 export class HttpError extends Error {constructor(status,message,code){super(message);this.status=status;this.code=code;}}
 export const hash=value=>createHash('sha256').update(value).digest('hex');
 export const token=()=>randomBytes(32).toString('hex');

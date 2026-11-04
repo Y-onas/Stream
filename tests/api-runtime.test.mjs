@@ -5,6 +5,21 @@ import {once} from 'node:events';
 import {createAPI} from '../services/api/src/server.mjs';
 const streamToken='s'.repeat(40),gatewayToken='g'.repeat(40),videoId='01234567-1234-4234-8234-012345678901',sessionId='01234567-1234-4234-8234-012345678902';
 
+test('open media bodies do not consume the short API request admission counter',{timeout:15000},async t=>{
+ // A deterministic counter regression with tiny synthetic bodies. No real
+ // source, database, throughput benchmark or production service is involved.
+ const application={config:{},close(){},handle:async(req,res)=>{res.end('{}');return true;},playback:{stream:async()=>({grant:'fixture',videoId})}};
+ const fetcher=async(url,{signal})=>new Response(new ReadableStream({start(controller){
+  controller.enqueue(new Uint8Array([1]));signal.addEventListener('abort',()=>controller.error(signal.reason),{once:true});
+ }}),{headers:{'Content-Length':'2','Content-Type':'video/mp4'}});
+ const handler=createAPI({streamOrigin:'http://synthetic.test',streamToken,gatewayToken,application,fetcher,thumbnails:{close(){}}});
+ const server=http.createServer(handler);server.listen(0,'127.0.0.1');await once(server,'listening');
+ const bodies=[];t.after(async()=>{await Promise.allSettled(bodies.map(reader=>reader.cancel()));server.closeAllConnections();server.close();await handler.close();});
+ const get=route=>fetch(`http://127.0.0.1:${server.address().port}`+route,{headers:{'X-Gateway-Token':gatewayToken}});
+ for(let i=0;i<33;i++){const response=await get(`/api/playback/${sessionId}/stream`);assert.equal(response.status,200);const reader=response.body.getReader();bodies.push(reader);assert.equal((await reader.read()).value[0],1);}
+ const response=await get('/api/videos');assert.equal(response.status,200);await response.text();
+});
+
 test('HTTP gateway preserves ranges only after playback authorization and fails closed without application storage',async t=>{
  let items=[{id:videoId,title:'Phone recording',filename:'phone.mov',uploadedAt:'2026-10-30',sizeBytes:1000,accessType:'FREE'}],ready=true;
  const go=http.createServer((req,res)=>{assert.equal(req.headers.authorization,`Bearer ${streamToken}`);if(req.url==='/readyz'){res.writeHead(ready?200:503);return res.end('{}');}assert.equal(req.url,`/internal/videos/${videoId}/stream`);assert.equal(req.headers['x-playback-grant'],'fixture-signed-grant');assert.equal(req.headers.range,'bytes=100-199');res.writeHead(206,{'Content-Length':'100','Content-Range':'bytes 100-199/1000','Content-Type':'video/quicktime'});res.end(Buffer.alloc(100,7));});go.listen(0,'127.0.0.1');await once(go,'listening');t.after(()=>{go.closeAllConnections();go.close();});

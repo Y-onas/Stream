@@ -109,11 +109,12 @@ func TestRevocationStopsOpenStreamAndDeniesNewRequests(t *testing.T) {
 }
 func TestLeaseRenewalThenExpiry(t *testing.T) {
 	var deadline atomic.Int64
-	deadline.Store(time.Now().Add(120 * time.Millisecond).UnixMilli())
+
 	v, key := testVerifier(t, func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(lease{Key: "channel-42-3", VideoID: testVideo, Until: deadline.Load()})
 	})
 	value := signed(t, key, nil)
+	deadline.Store(time.Now().Add(120 * time.Millisecond).UnixMilli())
 	ctx, stop, _, err := v.Open(context.Background(), httptest.NewRecorder(), value, testVideo)
 	if err != nil {
 		t.Fatal(err)
@@ -131,14 +132,14 @@ func TestLeaseRenewalThenExpiry(t *testing.T) {
 		t.Fatal("expired lease did not cancel active stream")
 	}
 }
-func TestVerificationOutageFailsClosed(t *testing.T) {
+func TestVerificationOutageRetainsOnlyExistingLease(t *testing.T) {
 	var failed atomic.Bool
 	v, key := testVerifier(t, func(w http.ResponseWriter, r *http.Request) {
 		if failed.Load() {
 			w.WriteHeader(503)
 			return
 		}
-		json.NewEncoder(w).Encode(lease{Key: "channel-42-3", VideoID: testVideo, Until: time.Now().Add(time.Minute).UnixMilli()})
+		json.NewEncoder(w).Encode(lease{Key: "channel-42-3", VideoID: testVideo, Until: time.Now().Add(450 * time.Millisecond).UnixMilli()})
 	})
 	value := signed(t, key, nil)
 	ctx, stop, _, err := v.Open(context.Background(), httptest.NewRecorder(), value, testVideo)
@@ -149,7 +150,89 @@ func TestVerificationOutageFailsClosed(t *testing.T) {
 	failed.Store(true)
 	select {
 	case <-ctx.Done():
+		t.Fatal("valid existing lease ended before expiry")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if _, _, _, err := v.Open(context.Background(), httptest.NewRecorder(), value, testVideo); err == nil {
+		t.Fatal("outage authorized a new request")
+	}
+	select {
+	case <-ctx.Done():
 	case <-time.After(time.Second):
 		t.Fatal("verification failure did not stop playback")
+	}
+}
+
+func TestDelayedRenewalCannotReviveExpiredLease(t *testing.T) {
+	var clock atomic.Int64
+	var deadline atomic.Int64
+	v, key := testVerifier(t, func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Active bool `json:"active"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		until := deadline.Load()
+		if request.Active {
+			// Model a delayed policy reply received after the old lease deadline.
+			clock.Store(until + 1)
+			until += 2000
+		}
+		json.NewEncoder(w).Encode(lease{Key: "channel-42-3", VideoID: testVideo, Until: until})
+	})
+	value := signed(t, key, nil)
+	clock.Store(time.Now().UnixMilli())
+	deadline.Store(clock.Load() + 500)
+	v.Now = func() time.Time { return time.UnixMilli(clock.Load()) }
+	ctx, stop, _, err := v.Open(context.Background(), httptest.NewRecorder(), value, testVideo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("late renewal revived an expired lease")
+	}
+}
+
+func TestRotationCutoffAndStrictExpiration(t *testing.T) {
+	v, current := testVerifier(t, func(http.ResponseWriter, *http.Request) { t.Error("verification should not require network") })
+	old, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now()
+	v.Now = func() time.Time { return at }
+	v.Keys = map[string]VerificationKey{"previous": {Key: &old.PublicKey, AcceptUntil: at.Add(time.Minute)}}
+	parsed, _, err := jwt.NewParser().ParseUnverified(signed(t, old, nil), &Claims{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed.Header["kid"] = "previous"
+	value, err := parsed.SignedString(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = v.Verify(value, testVideo); err != nil {
+		t.Fatal("previous rotation key rejected", err)
+	}
+	at = at.Add(61 * time.Second)
+	if _, err = v.Verify(value, testVideo); err == nil {
+		t.Fatal("retired rotation key accepted")
+	}
+	at = time.Now()
+	future := signed(t, current, func(c *Claims) {
+		c.IssuedAt = jwt.NewNumericDate(at.Add(20 * time.Second))
+		c.ExpiresAt = jwt.NewNumericDate(at.Add(300 * time.Second))
+	})
+	if _, err = v.Verify(future, testVideo); err != nil {
+		t.Fatal("small clock skew rejected", err)
+	}
+	expired := signed(t, current, func(c *Claims) {
+		c.IssuedAt = jwt.NewNumericDate(at.Add(-time.Minute))
+		c.ExpiresAt = jwt.NewNumericDate(at.Add(-time.Second))
+	})
+	if _, err = v.Verify(expired, testVideo); err == nil {
+		t.Fatal("clock tolerance accepted an expired grant")
 	}
 }

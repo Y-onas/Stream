@@ -1,18 +1,24 @@
 {$PUBLIC_HOST} {
+  @adminPages path /hub-console /hub-console/*
+  header @adminPages X-Robots-Tag "noindex, nofollow, noarchive"
   # Public browsing is anonymous. Account and admin routes authorize in Node.
   log {
     output stdout
     format filter {
       wrap json
       fields {
-        request>headers>Cookie delete
-        request>headers>Authorization delete
-        request>headers>X-Playback-Grant delete
-        resp_headers>Set-Cookie delete
+        # OAuth callbacks can carry tickets in URLs or referrers.
+        request>uri delete
+        request>headers delete
+        resp_headers delete
       }
     }
   }
   @api path /api/*
+  handle /readyz {
+    rewrite * /healthz
+    reverse_proxy api:3000
+  }
   handle @api {
     reverse_proxy api:3000 {
       header_up X-Gateway-Token {$API_GATEWAY_TOKEN}
@@ -22,7 +28,10 @@
       flush_interval -1
     }
   }
-  redir /admin /admin/
+  @legacyAdmin path /admin /admin/*
+  handle @legacyAdmin {
+    respond "Not found." 404
+  }
   handle {
     reverse_proxy web:80
   }

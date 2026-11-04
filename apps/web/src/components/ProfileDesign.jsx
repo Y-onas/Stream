@@ -5,6 +5,7 @@ import {useAccount,AccountRequired} from '../hooks/useAccount';
 import {MembershipPanel} from '../pages/Subscription';
 import {Catalogue} from '../pages/Catalogue';
 import {api} from '../services/api.mjs';
+import {AccountSecurity} from './AccountSecurity';
 function EditProfile({account,onClose}){
   const ref=useRef(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
   useEffect(()=>{const dialog=ref.current;dialog.showModal();return()=>dialog.close();},[]);
@@ -27,6 +28,7 @@ export function ProfileDesign({path='/me'}){
     {path==='/me/membership'&&<section className="profile-content-panel"><Link className="back-link" to="/me"><Icon name="left" size={16}/>Your profile</Link><h2><Icon name="premium"/>Membership</h2><MembershipPanel/></section>}
     {path==='/me'&&<section className="profile-content-panel"><h2><Icon name="premium"/>Your membership</h2>{library?current?<><p>{current.planName}</p><p className="muted">Expires {new Date(current.expiresAt).toLocaleString()}</p></>:<p className="muted">You have no active membership.</p>:<p role="status">Loading membership…</p>}<Link className="nav-pill" to="/me/membership">Membership details<Icon name="right" size={16}/></Link></section>}
     <section className="support-panel"><div className="support-heading"><span className="support-icon"><Icon name="support" size={24}/></span><div><h2>Contact support</h2><p>{account.platform?.supportUrl?'Get in touch with our support team.':'The support contact has not been configured.'}</p></div></div>{account.platform?.supportUrl&&<a className="support-message" href={account.platform.supportUrl} target="_blank" rel="noopener noreferrer">Message support<Icon name="right" size={18}/></a>}</section>
+    {path==='/me'&&<AccountSecurity/>}
     <div className="profile-signout"><button className="nav-pill" onClick={signOut}>Sign out</button></div>
     {editing&&<EditProfile account={account} onClose={()=>setEditing(false)}/>}
   </div>;

@@ -1,6 +1,6 @@
 import {readFileSync,existsSync} from 'node:fs';
-import {randomUUID,createPrivateKey,createPublicKey} from 'node:crypto';
-import {SignJWT,jwtVerify,compactVerify,importPKCS8,importSPKI} from 'jose';
+import {randomUUID,createPrivateKey,createPublicKey,createHash} from 'node:crypto';
+import {SignJWT,jwtVerify,compactVerify,importPKCS8,importSPKI,decodeProtectedHeader} from 'jose';
 import {HttpError,isUUID} from './domain.mjs';
 
 export function createPlaybackGrants(config,now=()=>new Date()){
@@ -11,26 +11,38 @@ export function createPlaybackGrants(config,now=()=>new Date()){
   let privateKey,publicKey;
   const configured=!!privatePEM&&!!publicPEM;
   if(configured){try{const privateObject=createPrivateKey(privatePEM),publicObject=createPublicKey(publicPEM);if(privateObject.asymmetricKeyType!=='rsa'||(privateObject.asymmetricKeyDetails?.modulusLength||0)<2048||!createPublicKey(privateObject).export({type:'spki',format:'der'}).equals(publicObject.export({type:'spki',format:'der'})))throw Error();}catch{throw Error('Invalid or mismatched playback signing keys.');}}
+  const keyId=config.playbackKeyId||(configured?createHash('sha256').update(createPublicKey(publicPEM).export({type:'spki',format:'der'})).digest('hex').slice(0,16):'unconfigured');
+  const tolerance=config.playbackClockTolerance??30;
+  if(!/^[\w-]{1,64}$/.test(keyId)||!Number.isInteger(tolerance)||tolerance<0||tolerance>30)throw Error('Invalid playback key ID or clock tolerance.');
+  const previous=config.playbackPreviousKeys||(config.playbackPreviousKeysPath?JSON.parse(readFileSync(config.playbackPreviousKeysPath,'utf8')).keys:[]),ring=new Map();
+  if(!Array.isArray(previous)||previous.length>2)throw Error('Invalid previous public key ring.');
+  for(const entry of previous){
+    const expires=Date.parse(entry.acceptUntil),object=createPublicKey(entry.publicKey);
+    if(!/^[\w-]{1,64}$/.test(entry.kid||'')||entry.kid===keyId||ring.has(entry.kid)||object.asymmetricKeyType!=='rsa'||(object.asymmetricKeyDetails?.modulusLength||0)<2048||!Number.isFinite(expires)||expires>+now()+86400000)throw Error('Invalid previous public key.');
+    ring.set(entry.kid,{expires,key:importSPKI(entry.publicKey,'RS256')});
+  }
   async function keys(){if(!configured)throw new HttpError(503,'Playback authorization is not configured.');privateKey??=importPKCS8(privatePEM,'RS256');publicKey??=importSPKI(publicPEM,'RS256');return{privateKey:await privateKey,publicKey:await publicKey};}
   function claimsValid(c,{active=false}={}){
     const time=Math.floor(+now()/1000);
-    if(c.iss!==issuer||c.aud!==audience||!isUUID(c.vid)||!isUUID(c.jti)||!Number.isInteger(c.iat)||!Number.isInteger(c.exp)||c.iat>time+2||c.exp<=c.iat||c.exp-c.iat>ttl||(!active&&c.exp<=time)||!['playback','probe'].includes(c.purpose))throw Error('Invalid grant claims');
+    if(!active&&Number.isInteger(c.exp)&&c.exp<=time)throw new HttpError(401,'Playback authorization has expired.','PLAYBACK_GRANT_EXPIRED');
+    if(c.iss!==issuer||c.aud!==audience||!isUUID(c.vid)||!isUUID(c.jti)||!Number.isInteger(c.iat)||!Number.isInteger(c.exp)||c.iat>time+tolerance||c.exp<=c.iat||c.exp-c.iat>ttl||(!active&&c.exp<=time)||!['playback','probe'].includes(c.purpose))throw Error('Invalid grant claims');
     if(c.purpose==='playback'&&(!isUUID(c.sid)||!isUUID(c.ctx)||!['VIP','FREE'].includes(c.mode)||typeof c.sub!=='string'||!c.sub))throw Error('Invalid playback claims');
     if(c.purpose==='probe'&&(c.mode!=='INTERNAL'||c.sub!=='media-worker'))throw Error('Invalid worker claims');
     return c;
   }
-  return{configured,ttl,
-    async sign(claims,until){const {privateKey}=await keys(),iat=Math.floor(+now()/1000),exp=Math.floor(+until/1000);if(exp<=iat)throw new HttpError(403,'Playback access has expired.','ACCESS_EXPIRED');return new SignJWT(claims).setProtectedHeader({alg:'RS256',typ:'JWT'}).setIssuer(issuer).setAudience(audience).setIssuedAt(iat).setExpirationTime(exp).setJti(randomUUID()).sign(privateKey);},
+  return{configured,ttl,keyId,
+    async sign(claims,until){const {privateKey}=await keys(),iat=Math.floor(+now()/1000),exp=Math.floor(+until/1000);if(exp<=iat)throw new HttpError(403,'Playback access has expired.','ACCESS_EXPIRED');return new SignJWT(claims).setProtectedHeader({alg:'RS256',typ:'JWT',kid:keyId}).setIssuer(issuer).setAudience(audience).setIssuedAt(iat).setExpirationTime(exp).setJti(randomUUID()).sign(privateKey);},
     async verify(value,{active=false}={}){
       try{
         if(typeof value!=='string'||value.length>8192)throw Error('Missing grant');
-        const {publicKey}=await keys();let payload;
+        const {publicKey:current}=await keys(),header=decodeProtectedHeader(value);let publicKey=current,payload;
+        if(header.kid!==undefined&&header.kid!==keyId){const older=ring.get(header.kid);if(!older||older.expires<=+now())throw Error('Unknown or retired key');publicKey=await older.key;}
         // An already-open stream is governed by its renewed database lease. Only
         // this private introspection path may inspect an expired signed grant.
         if(active){const verified=await compactVerify(value,publicKey,{algorithms:['RS256']});if(verified.protectedHeader.typ!=='JWT')throw Error('Invalid type');payload=JSON.parse(new TextDecoder().decode(verified.payload));}
-        else{const verified=await jwtVerify(value,publicKey,{algorithms:['RS256'],issuer,audience,typ:'JWT',currentDate:now(),requiredClaims:['iss','aud','iat','exp','jti','vid','purpose','mode','sub']});payload=verified.payload;}
+        else{const verified=await jwtVerify(value,publicKey,{algorithms:['RS256'],issuer,audience,typ:'JWT',clockTolerance:tolerance,currentDate:now(),requiredClaims:['iss','aud','iat','exp','jti','vid','purpose','mode','sub']});payload=verified.payload;}
         return claimsValid(payload,{active});
-      }catch(error){if(error.status===503)throw error;throw new HttpError(401,'Playback authorization is missing, invalid or expired.','PLAYBACK_GRANT_INVALID');}
+      }catch(error){if(error.status===503||error.code==='PLAYBACK_GRANT_EXPIRED')throw error;if(error.code==='ERR_JWT_EXPIRED')throw new HttpError(401,'Playback authorization has expired.','PLAYBACK_GRANT_EXPIRED');throw new HttpError(401,'Playback authorization is missing, invalid or expired.','PLAYBACK_GRANT_INVALID');}
     }
   };
 }

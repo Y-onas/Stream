@@ -30,3 +30,16 @@ test('missing signing configuration fails closed',async()=>{
  const service=createPlaybackGrants({},()=>at);assert.equal(service.configured,false);
  await assert.rejects(service.sign(claims(),new Date(+at+300000)),e=>e.status===503);
 });
+
+test('controlled key rotation accepts previous kid only until its cutoff',async()=>{
+ let clock=at;const old=createPlaybackGrants({...config,playbackKeyId:'previous'},()=>clock),token=await old.sign(claims(),new Date(+at+300000));
+ const next=generateKeyPairSync('rsa',{modulusLength:2048}),rotated=createPlaybackGrants({...config,playbackKeyId:'current',playbackPrivateKey:next.privateKey.export({type:'pkcs8',format:'pem'}),playbackPublicKey:next.publicKey.export({type:'spki',format:'pem'}),playbackPreviousKeys:[{kid:'previous',publicKey:config.playbackPublicKey,acceptUntil:new Date(+at+60000).toISOString()}]},()=>clock);
+ assert.equal((await rotated.verify(token)).mode,'VIP');clock=new Date(+at+61000);await assert.rejects(rotated.verify(token),e=>e.status===401);
+});
+
+test('clock tolerance permits small future iat but never permits expired grants',async()=>{
+ const service=createPlaybackGrants({...config,playbackClockTolerance:30},()=>at),future=createPlaybackGrants(config,()=>new Date(+at+20000));
+ assert.equal((await service.verify(await future.sign(claims(),new Date(+at+300000)))).mode,'VIP');
+ const past=createPlaybackGrants(config,()=>new Date(+at-60000)),expired=await past.sign(claims(),new Date(+at-1000));
+ await assert.rejects(service.verify(expired),e=>e.status===401);
+});

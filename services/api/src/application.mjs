@@ -5,6 +5,9 @@ import {createAdminAuth} from './admin-auth.mjs';
 import {createSettings,publicSettings} from './settings.mjs';
 import {createAdministration,publicVideoWhere} from './administration.mjs';
 import {createPlayback} from './playback.mjs';
+import {lifecycleUpdate} from './playback-capacity.mjs';
+import {createSecurityEvents} from './security-events.mjs';
+import {createOperations} from './operations.mjs';
 
 const SESSION='hh_session',VIEWER='hh_viewer';
 const safeEqual=(a,b)=>typeof a==='string'&&typeof b==='string'&&Buffer.byteLength(a)===Buffer.byteLength(b)&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
@@ -16,19 +19,33 @@ export function createApplication({db,config,production=false,now=()=>new Date()
   const administration=createAdministration({db,config,settings,audit,now});
   new Intl.DateTimeFormat('en',{timeZone:config.timezone}).format(now());
   const snapshot=()=>now();
-  const playbackAuth=createPlayback({db,config,production,actor,viewer,settings,now});
-  let syncState=null;
+  const playbackAuth=createPlayback({db,config,production,actor,viewer,settings,now,limit});
+  const security=createSecurityEvents(db,now);
+  const operations=createOperations({db,now});
+  let cleaning=false;
+  const cleanupTimer=setInterval(()=>{if(cleaning)return;cleaning=true;void playbackAuth.capacity.cleanup().catch(()=>{}).finally(()=>{cleaning=false;});},60000);cleanupTimer.unref();
+  let syncState=null,nextRatePruneAt=0;
   const table=name=>Prisma.raw(`"${db.appSchema||'public'}"."${name}"`);
-  function limit(req,name,count,window){
-    const key=hash(`${salt}|${req.headers['x-client-ip']||req.socket.remoteAddress}|${name}`),time=+snapshot();
-    let item=limits.get(key);if(!item||item.end<=time){item={count:0,end:time+window};limits.set(key,item);}if(++item.count>count)throw new HttpError(429,'Too many attempts. Please try again later.');
-    if(limits.size>5000)for(const [key,item] of limits){if(item.end<=time)limits.delete(key);if(limits.size<=5000)break;}
-    if(limits.size>10000)throw new HttpError(429,'Please try again later.');
+  function limit(req,name,count,window,subject){
+    const key=hash(`${salt}|${subject||req.headers['x-client-ip']||req.socket.remoteAddress}|${name}`),time=+snapshot();
+    let item=limits.get(key);if(!item||item.end<=time){
+      if(!item&&limits.size>=5000){
+        // Prune at most once a second and reject before insertion. An attacker
+        // supplying fresh client addresses cannot grow this map indefinitely.
+        if(time>=nextRatePruneAt){nextRatePruneAt=time+1000;for(const [oldKey,old]of limits)if(old.end<=time)limits.delete(oldKey);}
+        if(limits.size>=5000)throw new HttpError(429,'Please try again later.');
+      }
+      item={count:0,end:time+window};limits.set(key,item);
+    }if(++item.count>count)throw new HttpError(429,'Too many attempts. Please try again later.');
   }
-  async function actor(req,res,{required=false,csrf=false}={}){
+  async function actor(req,res,{required=false,csrf=false,onInvalidSession}={}){
     const raw=cookies(req)[SESSION];let session;
     if(raw&&/^[a-f0-9]{64}$/.test(raw))session=await db.userSession.findUnique({where:{tokenHash:hash(raw)},include:{user:true}});
     if(!session||session.expiresAt<=snapshot()||session.user.status!=='ACTIVE'){
+      // Only a recognized login cookie AND its matching CSRF token may trigger
+      // cleanup of an expired/suspended login's playback. Missing or forged
+      // credentials must never revoke another browser's reservation.
+      if(session&&csrf&&safeEqual(req.headers['x-csrf-token'],session.csrfToken))await onInvalidSession?.(session);
       if(raw)cookie(res,SESSION,'',{production,age:0});if(required)throw new HttpError(401,'Please sign in to continue.');return null;
     }
     if(csrf&&!safeEqual(req.headers['x-csrf-token'],session.csrfToken))throw new HttpError(403,'Please refresh your session and try again.');
@@ -95,31 +112,39 @@ export function createApplication({db,config,production=false,now=()=>new Date()
     },{timeout:15000});
   }
   async function heartbeat(req,res,id,data){
-    if(!isUUID(id)||!validPosition(data.position)||!Number.isInteger(data.sequence)||data.sequence<1||typeof data.playing!=='boolean'||typeof data.seeking!=='boolean')throw new HttpError(400,'Invalid playback update.');
-    const owner=await viewer(req,res);
-    return db.$transaction(async tx=>{
-      await tx.$queryRaw`SELECT id FROM ${table('hh_playback_sessions')} WHERE id=${id}::uuid FOR UPDATE`;
-      const play=await tx.playbackSession.findUnique({where:{id},include:{video:true}}),at=snapshot();
-      if(play&&(!play.video.published||!play.video.available||play.video.adminUnavailable))throw new HttpError(404,'Video is not available.');
-      if(!play||play.viewerId!==owner.id||play.expiresAt<=at||play.revokedAt||!play.authorizedUntil||play.authorizedUntil<=at)throw new HttpError(404,'Playback session not found or expired.');
-      if(play.accessType!==play.video.accessType)throw new HttpError(403,'Playback access changed. Start playback again.');
-      if(play.accessType==='VIP'){const session=await actor(req,res,{required:true,csrf:true});if(session.id!==play.accountSessionId)throw new HttpError(403,'Playback session does not belong to this account.');}
-      await playbackAuth.policy(play.video,play.accountSessionId);
+    if(!isUUID(id)||!validPosition(data.position)||!Number.isInteger(data.sequence)||data.sequence<1||typeof data.playing!=='boolean'||typeof data.seeking!=='boolean'||(data.state!==undefined&&!['PLAYING','PAUSED','BUFFERING','DISCONNECTED'].includes(data.state))||(data.playedSeconds!==undefined&&(!Number.isFinite(data.playedSeconds)||data.playedSeconds<0||data.playedSeconds>45)))throw new HttpError(400,'Invalid playback update.');
+    const owner=await viewer(req,res),accountSession=await actor(req,res,{csrf:true,onInvalidSession:async stale=>{
+      const play=await db.playbackSession.findUnique({where:{id}});if(play?.viewerId===owner.id&&play.accountSessionId===stale.id)await playbackAuth.invalidate(play);
+    }}),platform=await settings.get();let deniedPlay;
+    try{return await db.$transaction(async tx=>{
+      const play=await playbackAuth.load(tx,id,true),at=snapshot();
+      if(!play||play.viewerId!==owner.id||play.expiresAt<=at||play.revokedAt||["EXPIRED","TERMINATED"].includes(play.state)||!play.reservedUntil||play.reservedUntil<=at||!play.authorizedUntil||play.authorizedUntil<=at)throw new HttpError(404,'Playback session not found or expired.');
+      if(play.accountSessionId&&accountSession?.id!==play.accountSessionId)throw new HttpError(403,'Playback session does not belong to this account.');
+      try{
+        if(play.accessType!==play.video.accessType)throw new HttpError(403,'Playback access changed. Start playback again.','PLAYBACK_ACCESS_CHANGED');
+        await playbackAuth.policy(play.video,play.accountSessionId,tx,platform,play);
+      }catch(error){if([403,404].includes(error.status))deniedPlay=play;throw error;}
       if(data.sequence<=play.sequence)return {accepted:false,qualified:!!play.qualifiedAt};
       if(data.sequence!==play.sequence+1)throw new HttpError(409,'Restart the playback statistics session.');
       if(play.video.durationSeconds&&data.position>play.video.durationSeconds+2)throw new HttpError(400,'Invalid playback position.');
       const elapsed=(at-play.lastHeartbeatAt)/1000,advance=data.position-play.lastPosition;
-      const credit=data.playing&&!data.seeking&&elapsed>0&&elapsed<=20&&advance>0&&advance<=elapsed*2.5+1?Math.min(10,elapsed,advance):0;
-      const watched=play.watchedSeconds+credit,threshold=play.video.durationSeconds?Math.min(30,Math.max(1,play.video.durationSeconds/2)):30;
+      const credit=data.playing&&!data.seeking&&elapsed>0&&elapsed<=45&&advance>0&&advance<=elapsed*2.5+1?Math.min(30,elapsed,advance,data.playedSeconds??advance):0;
+      const watched=play.watchedSeconds+credit,threshold=play.video.durationSeconds&&play.video.durationSeconds<60?play.video.durationSeconds/2:30;
       let qualified=play.qualifiedAt,inserted=false;
       if(!qualified&&watched>=threshold){
         if(play.userId)await tx.watchedVideo.upsert({where:{userId_videoId:{userId:play.userId,videoId:play.videoId}},create:{userId:play.userId,videoId:play.videoId,firstWatchedAt:at,lastWatchedAt:at},update:{lastWatchedAt:at}});
-        const bucket=Math.floor(+at/86400000),result=await tx.videoView.createMany({data:[{videoId:play.videoId,viewerId:owner.id,userId:play.userId,accessType:play.accessType,dedupeKey:hash(`${play.videoId}|${owner.id}|${bucket}`),userDedupeKey:play.userId?hash(`${play.videoId}|${play.userId}|${bucket}`):null,watchedSeconds:watched,qualifiedAt:at}],skipDuplicates:true});
+        const bucket=Math.floor(+at/86400000),result=await tx.videoView.createMany({data:[{playbackSessionId:play.id,videoId:play.videoId,viewerId:owner.id,userId:play.userId,accessType:play.accessType,dedupeKey:hash(`${play.videoId}|${owner.id}|${bucket}`),userDedupeKey:play.userId?hash(`${play.videoId}|${play.userId}|${bucket}`):null,watchedSeconds:watched,qualifiedAt:at}],skipDuplicates:true});
         qualified=at;inserted=result.count===1;
       }
-      await tx.playbackSession.update({where:{id},data:{sequence:data.sequence,lastHeartbeatAt:at,lastPosition:data.position,watchedSeconds:watched,qualifiedAt:qualified}});
-      return {accepted:true,qualified:!!qualified,counted:inserted};
-    },{timeout:10000});
+      const lifecycle=lifecycleUpdate(play,data.state||(data.playing?'PLAYING':'PAUSED'),at);
+      if(lifecycle.reservedUntil<=at)throw new HttpError(410,'Paused session expired. Start playback again.','PLAYBACK_SESSION_EXPIRED');
+      await tx.playbackSession.update({where:{id},data:{...lifecycle,sequence:data.sequence,lastHeartbeatAt:at,lastPosition:data.position,progressUpdatedAt:at,watchedSeconds:watched,qualifiedAt:qualified}});
+      return {accepted:true,qualified:!!qualified,counted:inserted,recoveryUntil:lifecycle.reservedUntil};
+    },{timeout:10000});}catch(error){
+      // Persist a trusted access denial only after rollback releases the row
+      // lock. Throwing inside the transaction must not undo the revocation.
+      if(deniedPlay)await playbackAuth.invalidate(deniedPlay);throw error;
+    }
   }
   async function overview(){
     const {timezone}=await settings.get();
@@ -133,13 +158,13 @@ export function createApplication({db,config,production=false,now=()=>new Date()
     return video;
   }
   async function handle(req,res,url){
-    const path=url.pathname,method=req.method,isGet=method==='GET';
+    const path=url.pathname,method=req.method,isGet=method==='GET',adminRoute=path==='/api/admin'||path.startsWith('/api/admin/');
     if(path==='/api/admin/config'&&isGet){send(res,200,{publishableKey:config.clerkPublishableKey,configured:!!config.clerkPublishableKey&&!!config.clerkSecretKey,provider:'google'});return true;}
-    if(!path.startsWith('/api/admin/')){const platform=await settings.get();contact=platform.supportUsername||null;if(path==='/api/config'&&isGet){send(res,200,publicSettings(platform));return true;}if(platform.maintenanceMode&&!['/api/auth/me','/api/auth/login','/api/auth/logout'].includes(path))throw new HttpError(503,platform.maintenanceMessage,'MAINTENANCE');}
+    if(!adminRoute){const platform=await settings.get();contact=platform.supportUsername||null;if(path==='/api/config'&&isGet){send(res,200,publicSettings(platform));return true;}if(platform.maintenanceMode&&!['/api/auth/me','/api/auth/login','/api/auth/logout','/api/auth/logout-everywhere','/api/auth/password'].includes(path))throw new HttpError(503,platform.maintenanceMessage,'MAINTENANCE');}
     if(path==='/api/videos'&&isGet){send(res,200,await catalogue(url));return true;}
     if(path==='/api/trending'&&isGet){send(res,200,await trending(url.searchParams.get('period')||'day'));return true;}
-    if(path==='/api/playback/authorize'&&method==='POST'){limit(req,'playback-start',40,60000);const data=await body(req);send(res,201,await playbackAuth.authorize(req,res,data.videoId,data.position??0));return true;}
-    const grantAction=/^\/api\/playback\/([\w-]+)\/(renew|terminate)$/.exec(path);
+    if(path==='/api/playback/authorize'&&method==='POST'){limit(req,'playback-start',40,60000);const data=await body(req);send(res,201,await playbackAuth.authorize(req,res,data.videoId,data.position??0,data));return true;}
+    const grantAction=/^\/api\/playback\/([\w-]+)\/(renew|terminate|disconnect)$/.exec(path);
     if(grantAction&&method==='POST'){limit(req,'playback-renew',60,60000);await body(req);send(res,200,await playbackAuth[grantAction[2]](req,res,grantAction[1]));return true;}
     const meta=/^\/api\/videos\/([\w-]+)$/.exec(path);if(meta&&isGet){if(!isUUID(meta[1]))throw new HttpError(404,'Video not found.');const video=await db.video.findFirst({where:{publicId:meta[1],...publicVideoWhere}});if(!video)throw new HttpError(404,'Video not found.');send(res,200,videoDTO(video));return true;}
     const commentVideo=/^\/api\/videos\/([\w-]+)\/comments$/.exec(path);
@@ -166,6 +191,16 @@ export function createApplication({db,config,production=false,now=()=>new Date()
       if(!['liked','saved','watched'].includes(kind))throw new HttpError(400,'Select a profile collection.');
       const relation={liked:'likes',saved:'savedBy',watched:'watchedBy'}[kind];send(res,200,await catalogue(url,{[relation]:{some:{userId:session.userId}}}));return true;
     }
+    const progressPath=/^\/api\/me\/videos\/([\w-]+)\/progress$/.exec(path);
+    if(progressPath&&isGet){
+      const session=await actor(req,res,{required:true}),owner=await viewer(req,res,{create:true});
+      if(!isUUID(progressPath[1]))throw new HttpError(404,'Video not found.');
+      const video=await db.video.findFirst({where:{publicId:progressPath[1],...publicVideoWhere},select:{id:true,durationSeconds:true}});if(!video)throw new HttpError(404,'Video not found.');
+      // An actively playing different device is not a resume checkpoint for
+      // this device. Each session keeps its own independent progress row.
+      const progress=await db.playbackSession.findFirst({where:{userId:session.userId,videoId:video.id,lastPosition:{gt:0},progressUpdatedAt:{not:null},OR:[{viewerId:owner.id},{state:{in:['PAUSED','DISCONNECTED','EXPIRED','TERMINATED']}},{reservedUntil:{lte:snapshot()}}]},orderBy:[{progressUpdatedAt:'desc'},{id:'desc'}],select:{lastPosition:true,progressUpdatedAt:true}});
+      send(res,200,{progress:progress?{position:progress.lastPosition,updatedAt:progress.progressUpdatedAt,completed:video.durationSeconds?progress.lastPosition/video.durationSeconds>.95:false}:null});return true;
+    }
     const libraryItem=/^\/api\/me\/videos\/([\w-]+)\/(liked|saved)$/.exec(path);
     if(libraryItem&&method==='POST'){
       limit(req,'library',120,60000);const session=await actor(req,res,{required:true,csrf:true}),data=await body(req);
@@ -182,7 +217,18 @@ export function createApplication({db,config,production=false,now=()=>new Date()
       const previous=cookies(req)[SESSION];if(previous)await db.userSession.deleteMany({where:{tokenHash:hash(previous)}});
       send(res,path.endsWith('register')?201:200,await newSession(res,user));return true;
     }
-    if(path==='/api/auth/logout'&&method==='POST'){const session=await actor(req,res,{required:true,csrf:true});await db.userSession.delete({where:{id:session.id}});cookie(res,SESSION,'',{production,age:0});send(res,200,{signedOut:true});return true;}
+    if(['/api/auth/logout','/api/auth/logout-everywhere','/api/auth/password'].includes(path)&&method==='POST'){
+      limit(req,'account-security',8,60000);const session=await actor(req,res,{required:true,csrf:true});let newHash;
+      if(path==='/api/auth/password'){const data=await body(req);password(data.newPassword);if(typeof data.currentPassword!=='string'||data.currentPassword.length>128||!await verifyPassword(data.currentPassword,session.user.passwordHash))throw new HttpError(400,'Current password is incorrect.');newHash=await hashPassword(data.newPassword);}
+      await db.$transaction(async tx=>{
+        await tx.$queryRaw`SELECT id FROM ${table('hh_users')} WHERE id=${session.userId}::uuid FOR UPDATE`;
+        if(newHash){const current=await tx.user.findUnique({where:{id:session.userId}});if(current.passwordHash!==session.user.passwordHash)throw new HttpError(409,'Your account changed. Sign in again.');await tx.user.update({where:{id:session.userId},data:{passwordHash:newHash,version:{increment:1}}});}
+        const all=path!=='/api/auth/logout';
+        await tx.playbackSession.updateMany({where:{...(all?{userId:session.userId}:{accountSessionId:session.id}),revokedAt:null},data:{state:'TERMINATED',revokedAt:snapshot(),authorizedUntil:snapshot(),reservedUntil:snapshot()}});
+        await tx.userSession.deleteMany({where:all?{userId:session.userId}:{id:session.id}});
+      },{timeout:15000});
+      cookie(res,SESSION,'',{production,age:0});send(res,200,{signedOut:true});return true;
+    }
     if(path==='/api/me/membership'&&isGet){const session=await actor(req,res,{required:true});const history=await db.membership.findMany({where:{userId:session.userId},orderBy:{activatedAt:'desc'}});send(res,200,{current:publicMembership(await membership(session.userId)),history:history.map(publicMembership),requests:(await db.subscriptionRequest.findMany({where:{userId:session.userId},orderBy:{createdAt:'desc'},take:50})).map(r=>publicRequest(r,contact))});return true;}
     if(path==='/api/subscription-requests'&&method==='POST'){limit(req,'requests',15,60000);const session=await actor(req,res,{required:true,csrf:true}),data=await body(req);send(res,201,publicRequest(await newRequest(session.user,data.planId,data.videoId),contact));return true;}
     const ownRequest=/^\/api\/subscription-requests\/(HH-[A-F0-9]{16})$/.exec(path);
@@ -191,13 +237,15 @@ export function createApplication({db,config,production=false,now=()=>new Date()
     if(playback&&method==='POST'){limit(req,'playback-start',40,60000);const data=await body(req);send(res,201,await playbackAuth.authorize(req,res,playback[1],data.position??0));return true;}
     const beat=/^\/api\/playback\/([\w-]+)\/heartbeat$/.exec(path);
     if(beat&&method==='POST'){limit(req,'heartbeat',240,60000);send(res,200,await heartbeat(req,res,beat[1],await body(req)));return true;}
-    if(path.startsWith('/api/admin/')){
-      const admin=await adminAuth(req);if(method!=='GET')limit(req,'admin-mutation',120,60000);if(await administration.handle(req,res,url,admin))return true;const page=pager(url),q=(url.searchParams.get('q')||'').trim();if(q.length>100)throw new HttpError(400,'Search is too long.');
+    if(adminRoute){
+      const admin=await adminAuth(req);if(!['OWNER','ADMIN'].includes(admin.role))throw new HttpError(403,'Administrator access is not permitted.','ADMIN_ACCESS_DENIED');if(method!=='GET')limit(req,'admin-mutation',120,60000);
+      if(path==='/api/admin/operations'&&isGet){if(admin.role!=='OWNER')throw new HttpError(403,'Only an owner can view operational metrics.');send(res,200,await operations.get());return true;}
+      if(await administration.handle(req,res,url,admin))return true;const page=pager(url),q=(url.searchParams.get('q')||'').trim();if(q.length>100)throw new HttpError(400,'Search is too long.');
       if(path==='/api/admin/overview'&&isGet){send(res,200,await overview());return true;}
       if(path==='/api/admin/users'&&isGet){const where=q?{usernameCanonical:{contains:q.toLowerCase()}}:{};send(res,200,{items:(await db.user.findMany({where,...page,orderBy:{createdAt:'desc'},select:{id:true,username:true,status:true,version:true,createdAt:true,memberships:{orderBy:{expiresAt:'desc'},take:1}}})).map(u=>({...u,memberships:u.memberships.map(publicMembership)})),total:await db.user.count({where})});return true;}
       const userPath=/^\/api\/admin\/users\/([\w-]+)(?:\/(status))?$/.exec(path);
       if(userPath){if(!isUUID(userPath[1]))throw new HttpError(400,'Invalid user ID.');if(isGet&&!userPath[2]){const user=await db.user.findUnique({where:{id:userPath[1]},select:{id:true,username:true,status:true,version:true,createdAt:true,memberships:{orderBy:{activatedAt:'desc'}},requests:{orderBy:{createdAt:'desc'}}}});if(!user)throw new HttpError(404,'User not found.');send(res,200,{...user,memberships:user.memberships.map(publicMembership)});return true;}
-        if(method==='POST'&&userPath[2]==='status'){const data=await body(req);if(!['ACTIVE','SUSPENDED'].includes(data.status)||!Number.isInteger(data.version)||typeof data.note!=='string'||data.note.trim().length<3||data.note.length>4000)throw new HttpError(400,'Select a status and enter a reason.');const result=await db.$transaction(async tx=>{await tx.$queryRaw`SELECT id FROM ${table('hh_users')} WHERE id=${userPath[1]}::uuid FOR UPDATE`;const user=await tx.user.findUnique({where:{id:userPath[1]}});if(!user)throw new HttpError(404,'User not found.');if(user.version!==data.version)throw new HttpError(409,'This account changed. Refresh first.');const changed=await tx.user.update({where:{id:user.id},data:{status:data.status,suspensionReason:data.status==='SUSPENDED'?data.note.trim():null,statusChangedAt:snapshot(),statusChangedBy:admin.id,version:{increment:1}}});if(data.status==='SUSPENDED')await tx.userSession.deleteMany({where:{userId:user.id}});await audit(tx,admin,data.status==='SUSPENDED'?'ACCOUNT_SUSPENDED':'ACCOUNT_RESTORED','User',user.id,{status:user.status},{status:changed.status},{userId:user.id,note:data.note.trim()});return {...userDTO(changed),version:changed.version};});send(res,200,result);return true;}}
+        if(method==='POST'&&userPath[2]==='status'){const data=await body(req);if(!['ACTIVE','SUSPENDED'].includes(data.status)||!Number.isInteger(data.version)||typeof data.note!=='string'||data.note.trim().length<3||data.note.length>4000)throw new HttpError(400,'Select a status and enter a reason.');const result=await db.$transaction(async tx=>{await tx.$queryRaw`SELECT id FROM ${table('hh_users')} WHERE id=${userPath[1]}::uuid FOR UPDATE`;const user=await tx.user.findUnique({where:{id:userPath[1]}});if(!user)throw new HttpError(404,'User not found.');if(user.version!==data.version)throw new HttpError(409,'This account changed. Refresh first.');const changed=await tx.user.update({where:{id:user.id},data:{status:data.status,suspensionReason:data.status==='SUSPENDED'?data.note.trim():null,statusChangedAt:snapshot(),statusChangedBy:admin.id,version:{increment:1}}});if(data.status==='SUSPENDED'){await tx.playbackSession.updateMany({where:{userId:user.id,revokedAt:null},data:{state:'TERMINATED',revokedAt:snapshot(),authorizedUntil:snapshot(),reservedUntil:snapshot()}});await tx.userSession.deleteMany({where:{userId:user.id}});}await audit(tx,admin,data.status==='SUSPENDED'?'ACCOUNT_SUSPENDED':'ACCOUNT_RESTORED','User',user.id,{status:user.status},{status:changed.status},{userId:user.id,note:data.note.trim()});return {...userDTO(changed),version:changed.version};});send(res,200,result);return true;}}
       if(path==='/api/admin/subscription-requests'&&isGet){const status=url.searchParams.get('status')||'PENDING';if(!['PENDING','APPROVED','REJECTED','ALL'].includes(status))throw new HttpError(400,'Invalid request status.');const where={...(status==='ALL'?{}:{status}),...(q?{OR:[{reference:{contains:q,mode:'insensitive'}},{usernameSnapshot:{contains:q,mode:'insensitive'}}]}:{})};send(res,200,{items:await db.subscriptionRequest.findMany({where,...page,orderBy:{createdAt:'desc'}}),total:await db.subscriptionRequest.count({where})});return true;}
       const requestPath=/^\/api\/admin\/subscription-requests\/([\w-]+)$/.exec(path);
       if(requestPath){if(!isUUID(requestPath[1]))throw new HttpError(400,'Invalid request ID.');if(isGet){const record=await db.subscriptionRequest.findUnique({where:{id:requestPath[1]},include:{user:{select:{id:true,username:true,status:true}},membership:true,auditLogs:{orderBy:{createdAt:'desc'}}}});if(!record)throw new HttpError(404,'Request not found.');send(res,200,record);return true;}if(method==='POST'){send(res,200,await processRequest(requestPath[1],await body(req),admin));return true;}}
@@ -211,5 +259,5 @@ export function createApplication({db,config,production=false,now=()=>new Date()
     if(/^\/api\/(auth|me|subscription-requests|playback)(\/|$)/.test(path))throw new HttpError(404,'Endpoint not found.');
     return false;
   }
-  return {db,config,handle,actor,authorizeMedia,playback:playbackAuth,settings,catalogue,processRequest,heartbeat,newRequest,overview,attachSync(state){syncState=state;},async health(){await Promise.all([db.platformSettings.count(),db.administrator.count(),db.video.findFirst({select:{published:true,adminUnavailable:true,publicId:true,accessType:true}})]);return true;},async close(){await db.$disconnect();}};
+  return {db,config,handle,actor,authorizeMedia,playback:playbackAuth,security,operations,settings,catalogue,processRequest,heartbeat,newRequest,overview,attachSync(state){syncState=state;},async health(){await Promise.all([db.platformSettings.count(),db.administrator.count(),db.video.findFirst({select:{published:true,adminUnavailable:true,publicId:true,accessType:true}})]);return true;},async close(){clearInterval(cleanupTimer);security.close();operations.close();await db.$disconnect();}};
 }

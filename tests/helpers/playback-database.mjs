@@ -23,7 +23,7 @@ export function httpClient(origin,{gateway='g'.repeat(40),admin=false,adminToken
   async call(path,options){const response=await this.request(path,options),type=response.headers.get('content-type')||'',body=type.includes('application/json')?await response.json():Buffer.from(await response.arrayBuffer());if(body?.csrfToken!==undefined)csrf=body.csrfToken;return{status:response.status,body,headers:response.headers};}
  };
 }
-export function testPlaybackConfig(){const pair=generateKeyPairSync('rsa',{modulusLength:2048});return{playbackPrivateKey:pair.privateKey.export({type:'pkcs8',format:'pem'}),playbackPublicKey:pair.publicKey.export({type:'spki',format:'pem'})};}
+export function testPlaybackConfig(){const pair=generateKeyPairSync('rsa',{modulusLength:2048});return{sessionUpstreamLimit:2,playbackPrivateKey:pair.privateKey.export({type:'pkcs8',format:'pem'}),playbackPublicKey:pair.publicKey.export({type:'spki',format:'pem'})};}
 // Earlier acceptance scenarios keep readable source fixture labels. Translate
 // those labels to public IDs on the wire, and use the new grant protocol for
 // their media requests. The dedicated 4.3 suite asserts opaque responses as-is.
@@ -33,7 +33,12 @@ export async function scenarioClientFactory(db,origin){
  return(adminToken)=>{const client=httpClient(origin,{adminToken});return{async call(route,options={}){
   let wire=route.replace(/(?:channel|group)-\d+-\d+/g,id=>publicIds.get(id)||id);
   const media=/^\/api\/videos\/([^/]+)\/stream$/.exec(wire);
-  if(media&&['GET','HEAD'].includes(options.method||'GET')){const grant=await client.call('/api/playback/authorize',{method:'POST',data:{videoId:media[1],position:0}});if(grant.status!==201)return grant;wire=grant.body.streamUrl;}
-  const result=await client.call(wire,options);return{...result,body:normalize(result.body)};
+  let ticket;
+  if(media&&['GET','HEAD'].includes(options.method||'GET')){const grant=await client.call('/api/playback/authorize',{method:'POST',data:{videoId:media[1],position:0}});if(grant.status!==201)return grant;wire=grant.body.streamUrl;ticket=grant.body.id;}
+  const result=await client.call(wire,options);
+  // Earlier media checks finish their complete small response in this call;
+  // release that request's playback ticket rather than leaking artificial slots.
+  if(ticket)await client.call(`/api/playback/${ticket}/terminate`,{method:'POST',data:{}});
+  return{...result,body:normalize(result.body)};
  }};};
 }

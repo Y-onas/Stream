@@ -16,14 +16,17 @@ import (
 
 type HTTPOptions struct {
 	// TrustedInternal is used only behind the service's authenticated gateway.
-	TrustedInternal bool
-	MessageID       int
-	Host            string
-	ChunkSize       int
-	Concurrency     int
-	RequestTimeout  time.Duration
-	WriteTimeout    time.Duration
-	Logger          *log.Logger
+	TrustedInternal   bool
+	MessageID         int
+	Host              string
+	ChunkSize         int
+	Concurrency       int
+	RequestTimeout    time.Duration
+	WriteTimeout      time.Duration
+	Logger            *log.Logger
+	MaxBytesPerSecond int
+	OnSourceError     func(error)
+	OnSourceReady     func()
 }
 
 type Handler struct {
@@ -59,7 +62,7 @@ func NewHandler(provider Provider, opts HTTPOptions) (*Handler, error) {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
 	// Prevent DNS rebinding and cross-origin browser access to this local-only tool.
@@ -92,6 +95,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	file, reader, err := h.provider.Open(ctx)
 	if err != nil {
+		if ctx.Err() == nil && h.opts.OnSourceError != nil {
+			h.opts.OnSourceError(err)
+		}
 		upstreamError(w, err)
 		return
 	}
@@ -137,9 +143,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		part, err = ReadChunk(ctx, reader, file.Size, selected.Start, selected.End, h.opts.ChunkSize)
 		if err != nil {
+			if ctx.Err() == nil && h.opts.OnSourceError != nil {
+				h.opts.OnSourceError(err)
+			}
 			upstreamError(w, err)
 			return
 		}
+	}
+	if h.opts.OnSourceReady != nil {
+		h.opts.OnSourceReady()
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Length", strconv.FormatInt(selected.Length(), 10))
@@ -158,6 +170,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	position := selected.Start
+	paceStarted := time.Now()
+	var sent int64
 	for {
 		if ctx.Err() != nil {
 			h.abort("request canceled or timed out")
@@ -167,12 +181,28 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.abort("write deadline failed")
 			return
 		}
+		if h.opts.MaxBytesPerSecond > 0 {
+			// Pace this response only. Aggregate traffic grows with active media
+			// requests; this is not a global viewer or reservation limit.
+			due := paceStarted.Add(time.Duration(float64(sent+int64(len(part))) / float64(h.opts.MaxBytesPerSecond) * float64(time.Second)))
+			if wait := time.Until(due); wait > 0 {
+				timer := time.NewTimer(wait)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					h.abort("request canceled")
+					return
+				case <-timer.C:
+				}
+			}
+		}
 		n, err := w.Write(part)
 		if err != nil || n != len(part) {
 			h.abort("client write failed")
 			return
 		}
 		position += int64(n)
+		sent += int64(n)
 		if position > selected.End {
 			return
 		}
@@ -183,6 +213,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		part = nil
 		part, err = ReadChunk(ctx, reader, file.Size, position, selected.End, h.opts.ChunkSize)
 		if err != nil {
+			if ctx.Err() == nil && h.opts.OnSourceError != nil {
+				h.opts.OnSourceError(err)
+			}
 			if ctx.Err() != nil {
 				h.abort("client canceled or request timed out")
 			} else {

@@ -4,7 +4,20 @@ export const useAdmin=()=>useContext(AdminContext);
 export const date=v=>v?new Date(v).toLocaleString():'—';
 export const money=(amount,currency)=>new Intl.NumberFormat(undefined,{style:'currency',currency,minimumFractionDigits:2,maximumFractionDigits:2}).format(amount/100);
 export const duration=v=>Number.isFinite(v)?`${Math.floor(v/3600)}h ${Math.floor(v%3600/60)}m ${Math.floor(v%60)}s`:'Unknown';
-export function useRecords(endpoint){const {request,revision}=useAdmin(),[state,setState]=useState({loading:true});useEffect(()=>{const abort=new AbortController();setState({loading:true});request(endpoint,{signal:abort.signal}).then(data=>setState({data,loading:false})).catch(e=>{if(e.name!=='AbortError')setState({error:e.message,loading:false});});return()=>abort.abort();},[endpoint,revision]);return state;}
+export function useRecords(endpoint,{refreshMs=0}={}){
+ const {request,revision}=useAdmin(),[state,setState]=useState({loading:true});
+ useEffect(()=>{
+  const abort=new AbortController();let busy=false;setState({loading:true});
+  async function refresh(){if(busy||abort.signal.aborted)return;busy=true;try{
+   const signal=refreshMs?AbortSignal.any([abort.signal,AbortSignal.timeout(10000)]):abort.signal;
+   const data=await request(endpoint,{signal});if(!abort.signal.aborted)setState({data,loading:false,updatedAt:new Date().toISOString()});
+  }catch(error){if(!abort.signal.aborted)setState(old=>[401,403].includes(error.status)?{error:error.message,loading:false}:{...old,error:error.message,loading:false});}finally{busy=false;}}
+  const visibleRefresh=()=>{if(!document.hidden)void refresh();};void refresh();
+  const timer=refreshMs?setInterval(visibleRefresh,Math.max(15000,refreshMs)):null;
+  if(refreshMs){addEventListener('focus',visibleRefresh);document.addEventListener('visibilitychange',visibleRefresh);}
+  return()=>{abort.abort();clearInterval(timer);removeEventListener('focus',visibleRefresh);document.removeEventListener('visibilitychange',visibleRefresh);};
+ },[endpoint,revision,refreshMs]);return state;
+}
 export function Status({state}){return state.loading?<p role="status">Loading records…</p>:state.error?<p className="admin-error" role="alert">{state.error}</p>:null;}
 export function Table({columns,items,label}){return <div className="table-wrap"><table><caption className="sr-only">{label}</caption><thead><tr>{columns.map(([name],i)=><th key={i} scope="col">{name}</th>)}</tr></thead><tbody>{items.map((item,i)=><tr key={item.id||i}>{columns.map(([,render],j)=><td key={j}>{render(item)}</td>)}</tr>)}</tbody></table>{!items.length&&<p className="table-empty">No records match this view.</p>}</div>;}
 export function Pager({data,offset,setOffset}){return <div className="admin-pagination"><span>{data.total} records</span><button disabled={!offset} onClick={()=>setOffset(Math.max(0,offset-25))}>Previous</button><button disabled={offset+data.items.length>=data.total} onClick={()=>setOffset(offset+25)}>Next</button></div>;}

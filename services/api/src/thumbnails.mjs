@@ -102,15 +102,16 @@ export function sampleTimes(duration){
   return Number.isFinite(duration)&&duration>0?[duration*.15,duration*.4,duration*.65].map(n=>Math.round(Math.min(90,n)*100)/100):[90,30,5];
 }
 
-export function createThumbnailService({streamOrigin,streamToken,grantFor,fetcher=(...args)=>fetch(...args),ffmpegPath=process.env.FFMPEG_PATH||'ffmpeg',extract=extractFrame,maxCacheBytes=16*MiB,ttl=30*60*1000,maxPending=64,maxBytes=24*MiB,maxRequests=48,jobTimeout=150000,attemptTimeout=45000,logger=event=>console.log(JSON.stringify(event))}){
+export function createThumbnailService({streamOrigin,streamToken,grantFor,jobLease,fetcher=(...args)=>fetch(...args),ffmpegPath=process.env.FFMPEG_PATH||'ffmpeg',extract=extractFrame,maxCacheBytes=16*MiB,ttl=30*60*1000,maxPending=64,maxBytes=24*MiB,maxRequests=48,jobTimeout=150000,attemptTimeout=45000,logger=event=>console.log(JSON.stringify(event))}){
   const entries=new Map(),queue=[];let running=false,cacheBytes=0,closed=false,active;
   function remove(key){const entry=entries.get(key);if(entry?.bytes)cacheBytes-=entry.bytes.length;entries.delete(key);}
   function prune(){for(const [key,value] of entries)if(value.expires&&value.expires<=Date.now())remove(key);for(const [key,value] of entries){if(cacheBytes<=maxCacheBytes&&entries.size<=256)break;if(value.status!=='pending')remove(key);}}
   async function drain(){
     if(running||closed)return;running=true;
     while(queue.length&&!closed){
-      const entry=queue.shift();active=new AbortController();const timeout=setTimeout(()=>active.abort(),jobTimeout);let source,lastFailure;
+      const entry=queue.shift();active=new AbortController();const timeout=setTimeout(()=>active.abort(),jobTimeout);let source,lastFailure,release;
       try{
+        release=await jobLease?.();
         const identity={};
         source=await openRangeSource(entry.video,{signal:active.signal,maxBytes,maxRequests,readRange:(start,end,signal)=>readVideoRange({fetcher,streamOrigin,streamToken,video:entry.video,start,end,signal,identity,grantFor})});
         let bytes;
@@ -121,7 +122,7 @@ export function createThumbnailService({streamOrigin,streamToken,grantFor,fetche
         if(!bytes)throw Error('No suitable frame');
         entry.bytes=bytes;cacheBytes+=bytes.length;entry.status='ready';entry.expires=Date.now()+ttl;
       }catch{entry.status='unavailable';entry.expires=Date.now()+5*60*1000;}
-      finally{clearTimeout(timeout);active.abort();source?.close();logger({event:'thumbnail_complete',video:entry.video.id,status:entry.status,rangeBytes:source?.stats.bytes||0,rangeRequests:source?.stats.requests||0,...(entry.status==='unavailable'?{reason:source?.stats.failure||lastFailure||'no-frame'}:{})});active=undefined;prune();}
+      finally{clearTimeout(timeout);active.abort();source?.close();await release?.().catch(()=>{});logger({event:'thumbnail_complete',video:entry.video.id,status:entry.status,rangeBytes:source?.stats.bytes||0,rangeRequests:source?.stats.requests||0,...(entry.status==='unavailable'?{reason:source?.stats.failure||lastFailure||'no-frame'}:{})});active=undefined;prune();}
     }
     running=false;
   }

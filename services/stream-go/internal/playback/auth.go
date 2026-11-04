@@ -4,13 +4,16 @@ package playback
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"regexp"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -38,6 +41,9 @@ type Verifier struct {
 	Interval                                 time.Duration
 	Client                                   *http.Client
 	Now                                      func() time.Time
+	Keys                                     map[string]VerificationKey
+	KeyID                                    string
+	ClockTolerance                           time.Duration
 }
 type lease struct {
 	Key     string `json:"key"`
@@ -54,15 +60,16 @@ func New(publicPEM []byte, issuer, audience, checkURL, serviceToken string, inte
 	if err != nil || endpoint.Host == "" || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || issuer == "" || audience == "" || len(serviceToken) < 32 || interval <= 0 || interval > 15*time.Second {
 		return nil, errors.New("invalid playback verifier configuration")
 	}
-	return &Verifier{Key: key, Issuer: issuer, Audience: audience, CheckURL: checkURL, ServiceToken: serviceToken, Interval: interval, Client: &http.Client{Timeout: 3 * time.Second}, Now: time.Now}, nil
+	return &Verifier{Key: key, KeyID: publicKeyID(key), ClockTolerance: 30 * time.Second, Issuer: issuer, Audience: audience, CheckURL: checkURL, ServiceToken: serviceToken, Interval: interval, Client: &http.Client{Timeout: 5 * time.Second}, Now: time.Now}, nil
 }
 func (v *Verifier) Verify(value, videoID string) (*Claims, error) {
 	if v == nil || len(value) == 0 || len(value) > 8192 || !uuid.MatchString(videoID) {
 		return nil, Denied{401}
 	}
 	c := &Claims{}
-	token, err := jwt.ParseWithClaims(value, c, func(*jwt.Token) (any, error) { return v.Key, nil }, jwt.WithValidMethods([]string{"RS256"}), jwt.WithIssuer(v.Issuer), jwt.WithAudience(v.Audience), jwt.WithExpirationRequired(), jwt.WithIssuedAt(), jwt.WithTimeFunc(v.Now))
-	if err != nil || !token.Valid || token.Header["typ"] != "JWT" || c.VideoID != videoID || !uuid.MatchString(c.ID) || c.IssuedAt == nil || c.ExpiresAt == nil || c.Subject == "" || c.ExpiresAt.Sub(c.IssuedAt.Time) <= 0 || c.ExpiresAt.Sub(c.IssuedAt.Time) > 600*time.Second {
+	token, err := jwt.ParseWithClaims(value, c, v.verificationKey, jwt.WithValidMethods([]string{"RS256"}), jwt.WithIssuer(v.Issuer), jwt.WithAudience(v.Audience), jwt.WithExpirationRequired(), jwt.WithIssuedAt(), jwt.WithLeeway(v.ClockTolerance), jwt.WithTimeFunc(v.Now))
+	// Clock tolerance admits small future-issued timestamps, never expired grants.
+	if err != nil || !token.Valid || token.Header["typ"] != "JWT" || c.VideoID != videoID || !uuid.MatchString(c.ID) || c.IssuedAt == nil || c.ExpiresAt == nil || !c.ExpiresAt.After(v.Now()) || c.Subject == "" || c.ExpiresAt.Sub(c.IssuedAt.Time) <= 0 || c.ExpiresAt.Sub(c.IssuedAt.Time) > 600*time.Second {
 		return nil, Denied{401}
 	}
 	if c.Purpose == "playback" {
@@ -74,8 +81,8 @@ func (v *Verifier) Verify(value, videoID string) (*Claims, error) {
 	}
 	return c, nil
 }
-func (v *Verifier) check(ctx context.Context, value string, active bool, videoID string) (lease, error) {
-	data, _ := json.Marshal(map[string]any{"grant": value, "active": active})
+func (v *Verifier) check(ctx context.Context, value string, active bool, videoID, reservationID string) (lease, error) {
+	data, _ := json.Marshal(map[string]any{"grant": value, "active": active, "reservationId": reservationID})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, v.CheckURL, bytes.NewReader(data))
 	if err != nil {
 		return lease{}, Denied{503}
@@ -109,7 +116,14 @@ func (v *Verifier) Open(parent context.Context, w http.ResponseWriter, value, vi
 	if err != nil {
 		return nil, nil, "", err
 	}
-	initial, err := v.check(parent, value, false, videoID)
+	var randomID [16]byte
+	if _, err = rand.Read(randomID[:]); err != nil {
+		return nil, nil, "", Denied{503}
+	}
+	randomID[6] = (randomID[6] & 15) | 64
+	randomID[8] = (randomID[8] & 63) | 128
+	reservationID := fmt.Sprintf("%x-%x-%x-%x-%x", randomID[0:4], randomID[4:6], randomID[6:8], randomID[8:10], randomID[10:16])
+	initial, err := v.check(parent, value, false, videoID, reservationID)
 	if err != nil {
 		return nil, nil, "", err
 	}
@@ -118,7 +132,8 @@ func (v *Verifier) Open(parent context.Context, w http.ResponseWriter, value, vi
 	}
 	ctx, cancel := context.WithCancel(parent)
 	var finished atomic.Bool
-	stop := func() { finished.Store(true); cancel() }
+	var stopped sync.Once
+	stop := func() { stopped.Do(func() { finished.Store(true); cancel(); v.release(reservationID) }) }
 	updates := make(chan lease, 1)
 	failures := make(chan struct{}, 1)
 	if claims.Purpose == "playback" {
@@ -130,7 +145,11 @@ func (v *Verifier) Open(parent context.Context, w http.ResponseWriter, value, vi
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
-					next, err := v.check(ctx, value, true, videoID)
+					next, err := v.check(ctx, value, true, videoID, reservationID)
+					var temporary Denied
+					if errors.As(err, &temporary) && temporary.Status == 503 {
+						continue
+					}
 					if err != nil || next.Key != initial.Key {
 						select {
 						case failures <- struct{}{}:
@@ -148,6 +167,7 @@ func (v *Verifier) Open(parent context.Context, w http.ResponseWriter, value, vi
 		}()
 	}
 	go func() {
+		deadline := initial.Until
 		timer := time.NewTimer(time.Until(time.UnixMilli(initial.Until)))
 		defer timer.Stop()
 		abort := func() {
@@ -170,6 +190,13 @@ func (v *Verifier) Open(parent context.Context, w http.ResponseWriter, value, vi
 				abort()
 				return
 			case next := <-updates:
+				// A delayed renewal cannot resurrect an already-expired lease,
+				// even when both the update and timer channels are ready.
+				if v.Now().UnixMilli() >= deadline {
+					abort()
+					return
+				}
+				deadline = next.Until
 				if !timer.Stop() {
 					select {
 					case <-timer.C:

@@ -1,0 +1,137 @@
+# Complete Coolify application definition. Use this file ALONE, not as an overlay.
+# No host ports: route only the proxy service, internal port 80, through existing ingress.
+name: habeshan-hub
+services:
+  stream-go:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/stream.Dockerfile
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 20s
+    # Hub uses the resources available to its containers; no fixed CPU/RAM quota.
+    pids_limit: 128
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:?required}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:?required}
+      TELEGRAM_SOURCE: ${TELEGRAM_SOURCE:?required}
+      USER_NAME: ${USER_NAME:?required}
+      TELEGRAM_SESSION_PATH: ${TELEGRAM_SESSION_PATH:-/sessions/telegram.session.json}
+      CATALOGUE_PATH: ${CATALOGUE_PATH:-/state/catalogue.json}
+      STREAM_SERVICE_TOKEN: ${STREAM_SERVICE_TOKEN:?required}
+      STREAM_LISTEN: 0.0.0.0:8080
+      SYNC_INTERVAL: ${SYNC_INTERVAL:-30s}
+      PLAYBACK_PUBLIC_KEY_PATH: /run/secrets/playback-public.pem
+      PLAYBACK_CHECK_URL: http://api:3000/internal/playback/check
+      PLAYBACK_ISSUER: ${PLAYBACK_ISSUER:-habeshan-hub}
+      PLAYBACK_AUDIENCE: ${PLAYBACK_AUDIENCE:-habeshan-stream}
+      PLAYBACK_CHECK_INTERVAL: ${PLAYBACK_CHECK_INTERVAL:-15s}
+      PLAYBACK_KEY_ID: ${PLAYBACK_KEY_ID:-}
+      PLAYBACK_PREVIOUS_KEYS_PATH: /run/secrets/playback-previous.json
+      PLAYBACK_CLOCK_TOLERANCE: ${PLAYBACK_CLOCK_TOLERANCE:-30s}
+    volumes:
+      - telegram_session:/sessions
+      - catalogue_state:/state
+      - ${PLAYBACK_PUBLIC_KEY_PATH:?required}:/run/secrets/playback-public.pem:ro
+      - ${PLAYBACK_PREVIOUS_KEYS_PATH:-./infrastructure/docker/playback-previous.empty.json}:/run/secrets/playback-previous.json:ro
+    networks: [runtime]
+    healthcheck:
+      test: [CMD, /usr/local/bin/stream-service, healthcheck]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: &logging
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+  api:
+    pids_limit: 128
+    build:
+      context: .
+      dockerfile: infrastructure/docker/api.Dockerfile
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 20s
+    environment:
+      NODE_ENV: production
+      API_HOST: 0.0.0.0
+      API_PORT: '3000'
+      STREAM_ORIGIN: http://stream-go:8080
+      STREAM_SERVICE_TOKEN: ${STREAM_SERVICE_TOKEN:?required}
+      API_GATEWAY_TOKEN: ${API_GATEWAY_TOKEN:?required}
+      PUBLIC_ORIGIN: https://${PUBLIC_HOST:?required}
+      DATA_BASE_URL: ${DATA_BASE_URL:?required}
+      DATA_BASE_DIRECT_URL: ${DATA_BASE_DIRECT_URL:-}
+      MEMBERSHIP_CURRENCY: ${MEMBERSHIP_CURRENCY:-ETB}
+      TELEGRAM_SUPPORT_USERNAME: ${TELEGRAM_SUPPORT_USERNAME:-}
+      APP_TIMEZONE: ${APP_TIMEZONE:-Africa/Nairobi}
+      ADMIN_ORIGIN: https://${PUBLIC_HOST:?required}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
+      CLERK_JWT_KEY: ${CLERK_JWT_KEY:-}
+      CLERK_PUBLIC_KEY: ${CLERK_PUBLIC_KEY:-}
+      CLERK_PUBLISHABLE_KEY: ${CLERK_PUBLISHABLE_KEY:-}
+      EMAIL: ${EMAIL:-}
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-4}
+      PLAYBACK_SESSION_UPSTREAM_LIMIT: ${PLAYBACK_SESSION_UPSTREAM_LIMIT:-1}
+      PLAYBACK_DRAIN: ${PLAYBACK_DRAIN:-0}
+      PLAYBACK_PRIVATE_KEY_PATH: /run/secrets/playback-private.pem
+      PLAYBACK_PUBLIC_KEY_PATH: /run/secrets/playback-public.pem
+      PLAYBACK_GRANT_TTL_SECONDS: ${PLAYBACK_GRANT_TTL_SECONDS:-300}
+      PLAYBACK_ISSUER: ${PLAYBACK_ISSUER:-habeshan-hub}
+      PLAYBACK_AUDIENCE: ${PLAYBACK_AUDIENCE:-habeshan-stream}
+      PLAYBACK_KEY_ID: ${PLAYBACK_KEY_ID:-}
+      PLAYBACK_PREVIOUS_KEYS_PATH: /run/secrets/playback-previous.json
+      PLAYBACK_CLOCK_TOLERANCE_SECONDS: ${PLAYBACK_CLOCK_TOLERANCE_SECONDS:-30}
+    volumes:
+      - ${PLAYBACK_PRIVATE_KEY_PATH:?required}:/run/secrets/playback-private.pem:ro
+      - ${PLAYBACK_PUBLIC_KEY_PATH:?required}:/run/secrets/playback-public.pem:ro
+      - ${PLAYBACK_PREVIOUS_KEYS_PATH:-./infrastructure/docker/playback-previous.empty.json}:/run/secrets/playback-previous.json:ro
+    depends_on:
+      stream-go: {condition: service_started}
+    networks: [runtime]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/livez').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      start_period: 90s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: *logging
+  web:
+    pids_limit: 64
+    build:
+      context: .
+      dockerfile: infrastructure/docker/web.Dockerfile
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, wget, -q, --spider, http://127.0.0.1/healthz]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [runtime]
+    logging: *logging
+  proxy:
+    pids_limit: 64
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:?required}
+      API_GATEWAY_TOKEN: ${API_GATEWAY_TOKEN:?required}
+    expose: ['80']
+    volumes:
+      - ./infrastructure/docker/Caddyfile.coolify:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [web, api]
+    healthcheck:
+      test: [CMD-SHELL, 'wget -q --spider --header "Host: $$PUBLIC_HOST" http://127.0.0.1/healthz']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [runtime]
+    logging: *logging
+networks:
+  runtime:
+volumes:
+  telegram_session:
+  catalogue_state:
+  caddy_data:
+  caddy_config:
