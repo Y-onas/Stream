@@ -1,3 +1,9 @@
+> First deployment preparation now supersedes earlier deployment/bootstrap descriptions: [current guide](first-production-deployment.md). Use `compose.coolify.yaml` alone. `USER_NAME` is Telegram account configuration; migrations do not run on API startup. Prior test results below describe their dated local verification.
+
+# Current route/security update
+
+Administrator routes are now `/hub-console` and `/hub-console/login`; legacy frontend URLs return a plain 404 without disclosing the console path. The [current security report](admin-access-security.md) supersedes earlier route and authentication descriptions below. Historical test results remain dated evidence.
+
 # Module 4.2 — Administration, platform controls and analytics
 
 Implemented on 2026-11-02 as an extension of Module 4.1. The existing React applications, Node/Prisma/PostgreSQL service, Go/gotd discovery/session/checkpoint, qualified-view tracking and original HTTP Range path are reused. No second Telegram client, video disk cache, movie metadata service, bot or automatic payment collector was introduced.
@@ -105,3 +111,6 @@ The first real Google sign-in succeeded. Production needs the correct HTTPS doma
 Docker image execution, actual Hostinger/Coolify deployment, TLS, crash/reboot behavior, load and backup restoration require the target environment and are not claimed as passed here. Future work may include external monitoring/alerts, password recovery for public accounts and larger-catalogue search/index tuning. No extra application module is required to use the implemented administration sections once the real owner signs in.
 
 Reference: the Google button/callback uses the installed Clerk React6 [OAuth flow](https://clerk.com/docs/guides/development/custom-flows/authentication/oauth-connections); server checks use the [verified external account](https://clerk.com/docs/reference/backend/types/backend-external-account) and database approval.
+## Current playback policy
+
+Module 4.3 supersedes this report's global streaming-access behaviour with independent VIP/FREE classification per video and renewable signed grants. Existing settings are preserved as legacy data. See [the current playback and deployment report](module43.md).

@@ -1,6 +1,12 @@
 .git
 .env
 .env.*
+**/.env
+**/.env.*
+**/*.pem
+**/*.session
+**/*.session.*
+**/.sessions
 .sessions
 .local
 .tools

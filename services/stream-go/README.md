@@ -1,8 +1,10 @@
+> For the first production deployment, use [the current guide](../../docs/first-production-deployment.md). All four Telegram variables are required. `USER_NAME` must match the authenticated account; no test source defaults remain. Historical module notes below predate the API/database foundation.
+
 # Stream Web — Modules 1 and 2
 
 > Module 3 relocation: this Go module now lives in `services/stream-go`. From the repository root, use `npm.cmd run go:test`, `npm.cmd run go:build` and `npm.cmd run stream -- <flags>`. The root `.env`, `.sessions`, `.tools` and `bin` were kept in place. CLI examples below still run from the root; raw Go build/test commands now run inside this Go module. To build without npm from the root: `.\.tools\go\bin\go.exe -C services/stream-go build -o ../../bin/stream-discover.exe ./cmd/stream-discover`. See the root README for the new frontend.
 
-A Go command-line application that signs in to an existing Telegram account, finds a group or channel named `Stream Test`, and inspects message metadata to discover video files and candidate movie names.
+A Go command-line application that signs in to an existing Telegram account, finds the group/channel configured in `TELEGRAM_SOURCE`, and inspects message metadata to discover video files and candidate movie names.
 
 Module 2 adds a local HTTP service that streams the selected video's actual Telegram bytes progressively and supports seeking. It reuses Module 1's authentication, saved session, source selection and message inspection. The Go service has no media cache, full-file pre-download, database connection or public endpoint. Module 3's separate React apps and local adapter are documented in the root README; Prisma, PostgreSQL and deployment remain future work.
 
@@ -101,7 +103,7 @@ Inspect one message in the selected source:
 
 | Flag | Default | Purpose |
 | --- | --- | --- |
-| `-source` | `Stream Test` | Exact display name, ignoring case and surrounding spaces. |
+| `-source` | `TELEGRAM_SOURCE` | Exact display name, ignoring case and surrounding spaces. |
 | `-mode` | `discover` | `discover`, `list`, `inspect`, `find`, or `serve`. |
 | `-page-size` | `50` | History request size, from 1 to 100. |
 | `-max` | `100` | Maximum messages inspected, including non-video messages. |

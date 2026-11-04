@@ -1,3 +1,7 @@
+# First production preparation
+
+Use [the first-deployment guide](first-production-deployment.md) as the current deployment authority. `compose.coolify.yaml` is now a complete definition used alone; this application has never been deployed to production. Earlier verification entries describe local tests.
+
 > Current Module 4.2 updates administrator authorization to approved database emails and adds visibility, moderation and platform settings. See [the current implementation](module42.md). Earlier foundation notes below retain their historical context.
 
 # Automatic discovery, streaming and operations
@@ -49,7 +53,7 @@ Private Go routes are `/internal/catalogue`, `/internal/videos/:id/stream` and `
 
 Go `/healthz` and Node `/livez` are liveness probes. Go `/readyz` checks connection and synchronization freshness; Node `/healthz` queries it and PostgreSQL application tables, returning 503 when either is unavailable. Container liveness is deliberately separate from a temporarily unavailable Telegram connection, so a routine external outage does not create a restart storm. Monitor API readiness as well as container health. Health checks alone do not send operator alerts; connect a VPS monitoring system before operational launch.
 
-The original aligned, incremental HTTP Range implementation is reused, with bounded parts, per-part deadlines, cancellation and finite retries. `STREAM_CONCURRENCY` defaults to four active requests (configurable from 1 to 8), allowing a player to overlap its current read, metadata/tail read and seek. The authenticated gateway's `TrustedInternal` option bypasses development-only Host checks only after bearer authentication. The legacy public development handler retains its loopback/Host/Origin restrictions.
+The original aligned, incremental HTTP Range implementation is reused, with bounded parts, per-part deadlines, cancellation and finite retries. The Module 5 [capacity update](module5-capacity-update.md) retires `STREAM_CONCURRENCY`; there is no process-wide media semaphore. PostgreSQL tracks each request and enforces only the existing per-session parallel request allowance. The authenticated gateway's `TrustedInternal` option bypasses development-only Host checks only after bearer authentication. The legacy public development handler retains its loopback/Host/Origin restrictions.
 
 Native playback needs a supported container and codec. MP4 does not guarantee its codec will decode; MKV/HEVC browser compatibility remains limited. No transcoder/remuxer is implemented. Device caching can be disabled without changing native playback: the service worker then passes the native request directly to the network instead of imposing its segment loader. Enabled caching still uses bounded verified browser-side segments.
 
@@ -61,7 +65,7 @@ Qualified view events now persist in PostgreSQL. Most Viewed and Trending use ac
 
 Required secrets/values: `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, two independent service tokens (32+ random characters), `PUBLIC_HOST` (hostname only), and the existing `DATA_BASE_URL` PostgreSQL connection. Membership currency defaults to ETB. Human support contact and Clerk keys/administrator allowlist remain configuration items; live Clerk setup is deferred to Module 4.2. Never add a `VITE_` prefix to secrets. Use `.env.example` as a list of names, not as valid credentials, and do not overwrite the existing `.env`.
 
-Public browsing is anonymous; the temporary whole-site Basic Auth gate was removed. Normal account operations use secure application sessions. The separate `/admin/` build requires backend-verified Clerk authorization and an explicit administrator allowlist; missing configuration denies access. The proxy preserves the Clerk Authorization header. Use HTTPS for production cookies and traffic.
+Public browsing is anonymous; the temporary whole-site Basic Auth gate was removed. Normal account operations use secure application sessions. The separate `/hub-console/` build uses `/hub-console/login` and requires a verified active Clerk session plus an active PostgreSQL administrator record and stored role; missing configuration denies access. The old `/admin` paths return a plain 404 without redirecting to or revealing the console. The proxy preserves the Clerk Authorization header. Use HTTPS for production cookies and traffic.
 
 On a configured Linux VPS:
 
@@ -80,7 +84,7 @@ Enter Telegram phone/code/password only in that terminal. The headless daemon ne
 
 For Coolify, import the Compose project, configure the same environment/secrets and persistent volumes, point domain/DNS at the proxy, and let one TLS proxy own the public ports. If Coolify terminates TLS itself, adapt the supplied Caddy boundary deliberately rather than publishing Go/Node ports or stacking conflicting TLS listeners. Verify Host/Origin settings and the private gateway/admin authorization boundary in that arrangement.
 
-The current PostgreSQL database is external and uses `DATA_BASE_URL`; no duplicate container is created. The API runs additive Prisma migrations and idempotent package seeding before serving traffic. A migration failure prevents startup. Configure provider backups/restore checks and a suitably sized connection pool. A later self-hosted database needs a persistent volume and independent health/backup management.
+The current PostgreSQL database is external and uses `DATA_BASE_URL`; no duplicate container is created. The operator runs additive Prisma migrations and idempotent package/first-owner bootstrap as one controlled step before enabling traffic; replicas do not migrate on startup. Configure provider backups/restore checks and a suitably sized connection pool. A later self-hosted database needs a persistent volume and independent health/backup management.
 
 ## Deployment acceptance checklist
 

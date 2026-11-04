@@ -1,0 +1,38 @@
+http://{$PUBLIC_HOST} {
+  @adminPages path /hub-console /hub-console/*
+  header @adminPages X-Robots-Tag "noindex, nofollow, noarchive"
+  # TLS is terminated by the existing Coolify ingress, not another host listener.
+  log {
+    output stdout
+    format filter {
+      wrap json
+      fields {
+        # OAuth callbacks can carry tickets in URLs or referrers.
+        request>uri delete
+        request>headers delete
+        resp_headers delete
+      }
+    }
+  }
+  @api path /api/*
+  handle /readyz {
+    rewrite * /healthz
+    reverse_proxy api:3000
+  }
+  handle @api {
+    reverse_proxy api:3000 {
+      header_up X-Gateway-Token {$API_GATEWAY_TOKEN}
+      # Authentication and CSRF use the configured public HTTPS origin in Node.
+      header_up X-Client-IP {remote_host}
+      header_up -X-Playback-Grant
+      flush_interval -1
+    }
+  }
+  @legacyAdmin path /admin /admin/*
+  handle @legacyAdmin {
+    respond "Not found." 404
+  }
+  handle {
+    reverse_proxy web:80
+  }
+}

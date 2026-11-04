@@ -3,10 +3,15 @@ package streaming
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/tg"
 )
+
+var activeDCPools atomic.Int64
+
+func ActiveDCPools() int64 { return activeDCPools.Load() }
 
 // Connections reuse the existing authorized client through gotd's DC pool API.
 // The mutex protects the map only, never a network call. The HTTP handler bounds
@@ -64,6 +69,7 @@ func (p *dcPools) get(ctx context.Context, dc int) (*tg.Client, error) {
 	e.err = err
 	if err == nil {
 		e.pool = connection
+		activeDCPools.Add(1)
 		e.api = tg.NewClient(connection)
 	} else {
 		delete(p.entries, dc)
@@ -78,11 +84,16 @@ func (p *dcPools) get(ctx context.Context, dc int) (*tg.Client, error) {
 
 func (p *dcPools) close() {
 	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
 	p.closed = true
 	var connections []telegram.CloseInvoker
 	for _, e := range p.entries {
 		if e.pool != nil {
 			connections = append(connections, e.pool)
+			activeDCPools.Add(-1)
 		}
 	}
 	p.mu.Unlock()

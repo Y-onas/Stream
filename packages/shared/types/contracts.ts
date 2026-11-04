@@ -1,6 +1,7 @@
 /** Public API contracts. No Telegram credentials, access hashes or private routes. */
 export interface Video {
   id: string;
+  accessType: 'VIP' | 'FREE';
   title: string;
   titleUnverified?: boolean;
   description?: string;
@@ -27,10 +28,12 @@ export interface Comment {id:string; author:{id:string;displayName:string}; body
 export interface Comments {available:true;items:Comment[];total:number;nextOffset:number|null;}
 export interface NewComment {body:string;}
 export interface PlaybackProgress {videoId:string;position:number;completed:boolean;lastWatched:string;}
+export interface PlaybackAuthorization {id:string;streamUrl:string;expiresAt:string;accessType:'VIP'|'FREE';}
 export interface Account {id:string;username:string;displayName:string|null;status:'ACTIVE'|'SUSPENDED';createdAt:string;}
 export interface MembershipPlan {id:string;name:string;durationMonths:number;priceMinor:number;currency:string;active:boolean;sortOrder:number;}
 export interface Membership {id:string;planName:string;activatedAt:string;expiresAt:string;revokedAt:string|null;status:'ACTIVE'|'EXPIRED'|'REVOKED';}
 export interface SubscriptionRequest {
+  videoId:string|null;
   id:string;reference:string;username:string;planId:string;planName:string;
   durationMonths:number;amountMinor:number;currency:string;
   status:'PENDING'|'APPROVED'|'REJECTED'|'CANCELLED';createdAt:string;

@@ -16,15 +16,19 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	goruntime "runtime"
 	"sort"
 	"strconv"
 	"streamweb/internal/catalogue"
 	"streamweb/internal/config"
 	"streamweb/internal/discovery"
+	"streamweb/internal/observability"
+	"streamweb/internal/playback"
 	"streamweb/internal/streaming"
 	login "streamweb/internal/telegram"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -35,12 +39,15 @@ type runtime struct {
 	ctx    context.Context
 }
 type service struct {
-	mu      sync.RWMutex
-	current *runtime
-	store   *catalogue.Store
-	token   string
-	slots   chan struct{}
-	poll    time.Duration
+	mu            sync.RWMutex
+	current       *runtime
+	store         *catalogue.Store
+	token         string
+	activeMedia   atomic.Int64
+	poll          time.Duration
+	authorization *playback.Verifier
+	requests      atomic.Uint64
+	errors        atomic.Uint64
 }
 
 func env(key, fallback string) string {
@@ -58,6 +65,7 @@ func respond(w http.ResponseWriter, status int, value any) {
 func (s *service) get() *runtime  { s.mu.RLock(); defer s.mu.RUnlock(); return s.current }
 func (s *service) set(r *runtime) { s.mu.Lock(); s.current = r; s.mu.Unlock() }
 func (s *service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.requests.Add(1)
 	if r.URL.Path == "/healthz" && r.Method == "GET" {
 		respond(w, 200, map[string]bool{"alive": true})
 		return
@@ -68,6 +76,12 @@ func (s *service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method != "GET" && r.Method != "HEAD" {
 		respond(w, 405, map[string]string{"message": "Method not allowed"})
+		return
+	}
+	if r.URL.Path == "/internal/metrics" {
+		var memory goruntime.MemStats
+		goruntime.ReadMemStats(&memory)
+		respond(w, 200, map[string]any{"container": observability.Snapshot(), "activeMediaRequests": s.activeMedia.Load(), "openDCPools": streaming.ActiveDCPools(), "goHeapBytes": memory.HeapAlloc, "goSystemBytes": memory.Sys, "goroutines": goruntime.NumGoroutine(), "requests": s.requests.Load(), "sourceErrors": s.errors.Load()})
 		return
 	}
 	st := s.store.Snapshot()
@@ -95,7 +109,18 @@ func (s *service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, prefix), "/stream")
-	record, ok := st.Videos[key]
+	ctx, finish, sourceKey, err := s.authorization.Open(r.Context(), w, r.Header.Get("X-Playback-Grant"), key)
+	if err != nil {
+		status := 401
+		var denied playback.Denied
+		if errors.As(err, &denied) {
+			status = denied.Status
+		}
+		respond(w, status, map[string]string{"message": "Playback authorization is unavailable or denied"})
+		return
+	}
+	defer finish()
+	record, ok := st.Videos[sourceKey]
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -104,27 +129,42 @@ func (s *service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		respond(w, 503, map[string]string{"message": "Telegram connection unavailable; retry shortly"})
 		return
 	}
-	select {
-	case s.slots <- struct{}{}:
-		defer func() { <-s.slots }()
-	default:
-		w.Header().Set("Retry-After", "2")
-		respond(w, 503, map[string]string{"message": "Stream capacity reached"})
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Hour)
+	// Informational only: admission is authorized per playback, never by a
+	// process-wide viewer counter. Each request still bounds its own buffers.
+	s.activeMedia.Add(1)
+	defer s.activeMedia.Add(-1)
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Hour)
 	defer cancel()
 	stop := context.AfterFunc(current.ctx, cancel)
 	defer stop()
 	setup, done := context.WithTimeout(ctx, 20*time.Second)
+	reportError := func(err error) {
+		s.errors.Add(1)
+		status := "TEMPORARY_UNAVAILABLE"
+		if errors.Is(err, streaming.ErrNotFound) || errors.Is(err, streaming.ErrUnsupported) {
+			status = "PERMANENT_UNAVAILABLE"
+			_ = s.store.Update(func(st *catalogue.State) error {
+				if st.Videos[sourceKey] == record {
+					delete(st.Videos, sourceKey)
+				}
+				return nil
+			})
+		}
+		s.authorization.Source(key, status)
+	}
 	backend, err := streaming.NewTelegramBackend(setup, current.client, current.source, record.MessageID, 1, 20*time.Second)
 	done()
 	if err != nil {
+		if ctx.Err() == nil {
+			reportError(err)
+		}
 		respond(w, 502, map[string]string{"message": streaming.SafeError(err)})
 		return
 	}
 	defer backend.Close()
-	handler, err := streaming.NewHandler(backend, streaming.HTTPOptions{TrustedInternal: true, MessageID: record.MessageID, ChunkSize: 262144, Concurrency: 1, RequestTimeout: 3 * time.Hour, WriteTimeout: 15 * time.Second})
+	// No artificial video bitrate cap: backpressure and bounded parts control
+	// buffering while the source and available network determine throughput.
+	handler, err := streaming.NewHandler(backend, streaming.HTTPOptions{TrustedInternal: true, MessageID: record.MessageID, ChunkSize: 262144, Concurrency: 1, RequestTimeout: 3 * time.Hour, WriteTimeout: 15 * time.Second, OnSourceError: reportError, OnSourceReady: func() { s.authorization.Source(key, "AVAILABLE") }})
 	if err != nil {
 		respond(w, 500, map[string]string{"message": "Stream initialization failed"})
 		return
@@ -202,6 +242,9 @@ func (s *service) connect(ctx context.Context, cfg config.Config, session, sourc
 		if !status.Authorized {
 			return errors.New("saved session is not authorized; run interactive discovery login first")
 		}
+		if status.User == nil || !cfg.MatchesUsername(status.User.Username) {
+			return config.ValidationError("USER_NAME does not match the saved Telegram account; authenticate the intended account or correct USER_NAME")
+		}
 		sources, err := discovery.Find(setup, client.API(), sourceName)
 		if err != nil {
 			return err
@@ -223,7 +266,16 @@ func (s *service) connect(ctx context.Context, cfg config.Config, session, sourc
 		defer stop()
 		s.set(&runtime{client: client, source: source, ctx: work})
 		defer s.set(nil)
-		syncer := catalogue.Syncer{Store: s.store, Fetch: discovery.History(client.API(), source), Source: source.Info, PageSize: 50}
+		history := discovery.History(client.API(), source)
+		fetchPage := func(ctx context.Context, offset, limit int) ([]tg.MessageClass, error) {
+			leased, release, err := s.authorization.Discovery(ctx)
+			if err != nil {
+				return nil, err
+			}
+			defer release()
+			return history(leased, offset, limit)
+		}
+		syncer := catalogue.Syncer{Store: s.store, Fetch: fetchPage, Source: source.Info, PageSize: 50}
 		results := make(chan error, 2)
 		go func() { results <- manager.Run(work, client.API(), status.User.ID, updates.AuthOptions{}) }()
 		go func() {
@@ -268,33 +320,61 @@ func (s *service) connect(ctx context.Context, cfg config.Config, session, sourc
 }
 func run() error {
 	envPath := flag.String("env", ".env", "dotenv file")
+	checkConfig := flag.Bool("check-config", false, "validate required configuration without contacting Telegram or starting HTTP")
 	flag.Parse()
-	cfg, err := config.Load(*envPath)
+	cfg, err := config.LoadRuntime(*envPath)
 	if err != nil {
 		return err
 	}
 	token := os.Getenv("STREAM_SERVICE_TOKEN")
 	if len(token) < 32 {
-		return errors.New("STREAM_SERVICE_TOKEN must be at least 32 characters")
+		return config.ValidationError("STREAM_SERVICE_TOKEN must be at least 32 characters")
 	}
 	poll, err := time.ParseDuration(env("SYNC_INTERVAL", "30s"))
 	if err != nil || poll < 5*time.Second {
-		return errors.New("SYNC_INTERVAL must be at least 5s")
+		return config.ValidationError("SYNC_INTERVAL must be at least 5s")
 	}
 	store, err := catalogue.Open(env("CATALOGUE_PATH", ".local/runtime/catalogue.json"))
 	if err != nil {
 		return err
 	}
-	concurrency, err := strconv.Atoi(env("STREAM_CONCURRENCY", "4"))
-	if err != nil || concurrency < 1 || concurrency > 8 {
-		return errors.New("STREAM_CONCURRENCY must be 1..8")
+	publicKey, err := os.ReadFile(env("PLAYBACK_PUBLIC_KEY_PATH", ".local/playback-public.pem"))
+	if err != nil {
+		return config.ValidationError("PLAYBACK_PUBLIC_KEY_PATH must identify a readable public key")
 	}
-	s := &service{store: store, token: token, slots: make(chan struct{}, concurrency), poll: poll}
+	checkInterval, err := time.ParseDuration(env("PLAYBACK_CHECK_INTERVAL", "15s"))
+	if err != nil || checkInterval < time.Second || checkInterval > 15*time.Second {
+		return config.ValidationError("invalid playback verification interval")
+	}
+	verifier, err := playback.New(publicKey, env("PLAYBACK_ISSUER", "habeshan-hub"), env("PLAYBACK_AUDIENCE", "habeshan-stream"), env("PLAYBACK_CHECK_URL", "http://127.0.0.1:3000/internal/playback/check"), token, checkInterval)
+	if err != nil {
+		return err
+	}
+	tolerance, err := time.ParseDuration(env("PLAYBACK_CLOCK_TOLERANCE", "30s"))
+	if err != nil {
+		return config.ValidationError("invalid clock tolerance")
+	}
+	if err = verifier.ConfigureKeys(os.Getenv("PLAYBACK_KEY_ID"), os.Getenv("PLAYBACK_PREVIOUS_KEYS_PATH"), tolerance); err != nil {
+		return err
+	}
+	s := &service{store: store, token: token, poll: poll, authorization: verifier}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	address := env("STREAM_LISTEN", "127.0.0.1:8080")
 	if _, _, err = net.SplitHostPort(address); err != nil {
-		return errors.New("invalid STREAM_LISTEN")
+		return config.ValidationError("invalid STREAM_LISTEN")
+	}
+	_, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return config.ValidationError("invalid STREAM_LISTEN")
+	}
+	number, err := strconv.Atoi(port)
+	if err != nil || number < 1 || number > 65535 {
+		return config.ValidationError("STREAM_LISTEN must include a valid TCP port")
+	}
+	if *checkConfig {
+		slog.Info("stream_configuration_valid")
+		return nil
 	}
 	server := &http.Server{Addr: address, Handler: s, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 8192, BaseContext: func(net.Listener) context.Context { return ctx }}
 	result := make(chan error, 1)
@@ -305,8 +385,13 @@ func run() error {
 		delay := time.Second
 		for ctx.Err() == nil {
 			started := time.Now()
-			err := s.connect(ctx, cfg, env("TELEGRAM_SESSION_PATH", ".sessions/telegram.session.json"), env("TELEGRAM_SOURCE", "Stream Test"))
+			err := s.connect(ctx, cfg, env("TELEGRAM_SESSION_PATH", ".sessions/telegram.session.json"), cfg.Source)
 			if ctx.Err() != nil {
+				return
+			}
+			var invalid config.ValidationError
+			if errors.As(err, &invalid) {
+				result <- err
 				return
 			}
 			slog.Error("telegram_reconnecting", "reason", streaming.SafeError(err), "retrySeconds", delay.Seconds())
@@ -362,7 +447,12 @@ func main() {
 		return
 	}
 	if err := run(); err != nil {
-		slog.Error("stream_service_stopped", "reason", "configuration or runtime failure; verify required configuration and state permissions")
+		var invalid config.ValidationError
+		if errors.As(err, &invalid) {
+			slog.Error("stream_configuration_error", "reason", invalid.Error())
+		} else {
+			slog.Error("stream_service_stopped", "reason", "configuration or runtime failure; verify required configuration and state permissions")
+		}
 		os.Exit(1)
 	}
 }

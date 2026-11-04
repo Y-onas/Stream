@@ -10,6 +10,7 @@ Use Node 22.12+ and the existing root `.env`. Keep the exact server variable `DA
 npm.cmd ci
 npm.cmd run db:generate
 npm.cmd run db:migrate
+node scripts/playback-keys.mjs
 npm.cmd run runtime:build
 npm.cmd run runtime:go
 ```
@@ -21,17 +22,29 @@ npm.cmd run runtime:api
 npm.cmd run dev
 ```
 
-Open [Habeshan HUB](http://127.0.0.1:5173). The Go service scans accessible history and maintains its resumable metadata checkpoint. Node imports that existing catalogue into PostgreSQL every 15 seconds. Stable video IDs, Telegram session reuse and original byte-range delivery remain unchanged. Source video files/chunks are not cached on VPS disk.
+Open [Habeshan HUB](http://127.0.0.1:5173). The Go service scans accessible history and maintains its resumable metadata checkpoint. Node imports that existing catalogue into PostgreSQL every 15 seconds. Internal video IDs, Telegram session reuse and original byte-range delivery are preserved. Public URLs now use opaque UUIDs. Source video files/chunks are not cached on VPS disk.
 
 For first Telegram login only, use `npm.cmd run go:build`, then `npm.cmd run stream -- -mode find`. Enter phone/code/password in that terminal. Stop the legacy streamer before starting the daemon with the same session. Local wrappers keep private generated service tokens in ignored `.local/runtime.json`.
 
-The separate administrator application runs with `npm.cmd run dev:admin` at [the local admin URL](http://127.0.0.1:5174). Module 4.2 now provides video/user/membership/comment management, real analytics, database settings and append-only audit history. Google sign-in uses `CLERK_PUBLIC_KEY` and `CLERK_SECRET_KEY`. `EMAIL` and `USER_NAME` bootstrap the first owner once; later administrator approvals are made only inside the dashboard and checked against PostgreSQL. There is no public administrator registration. [Full implementation report](docs/module42.md).
+The separate administrator application runs with `npm.cmd run dev:admin` at [the local admin URL](http://127.0.0.1:5174/hub-console/login). Module 4.2 now provides video/user/membership/comment management, real analytics, database settings and append-only audit history. Google sign-in uses `CLERK_PUBLIC_KEY` and `CLERK_SECRET_KEY`. The controlled migration step uses `EMAIL` to approve the first owner once; `USER_NAME` identifies the Telegram account; later administrator approvals are made only inside the dashboard and checked against PostgreSQL. There is no public administrator registration. [Full implementation report](docs/module42.md).
 
 ## Account-owned profile
 
 Guests see only Log in and Sign up. Signed-in profile identity, watched history, likes, watchlist and membership now use the authenticated account. See [profile implementation and checks](docs/account-profile.md). Legacy device records remain preserved and are not imported into accounts.
 
-## Module 4.2
+## Module 5 resource protection and sessions
+
+[Module 5 implementation, checks and deployment notes](docs/module5.md) covers PostgreSQL session tracking, the two-session VIP allowance, pause/recovery deadlines, admin termination, independent progress, key rotation and bounded background work. The [global-capacity update](docs/module5-capacity-update.md) removes global viewer and media-reservation caps while retaining two VIP sessions per account. The subsequent [resource and speed update](docs/module5-resources-update.md) removes fixed Hub CPU/RAM quotas and the video speed throttle. Hub uses available server resources; this is not a measured viewer-capacity guarantee. No other VPS project was inspected or changed.
+
+For the first shared-Coolify deployment, use **`compose.coolify.yaml` alone**: it is a complete definition with no host port bindings. Do not merge the standalone `compose.yaml`. The report explains the per-session request-policy command, configuration, rollout/rollback and outstanding real-host/device/backup checks. Existing source streaming stays incremental, private and no-store; no full-video disk cache or transcoding is added.
+
+## Module 4.3 playback access
+
+[Implementation, tests and deployment report](docs/module43.md) describes per-video VIP/FREE classification, Node-issued RS256 grants, private Go verification, renewal and monitored active connections. Discovered videos default to VIP. Administrators can mark individual videos Free without changing their visibility. Free videos are public and excluded from VIP Trending. Existing global streaming-access settings are retained as legacy data; per-video policy now controls playback.
+
+Generate server keys before starting the API and Go service; the helper preserves existing keys and never edits `.env`. Production must mount the private key only into Node and the public key into both services. New grants and Range requests always recheck current access. Active connections have a hard lease deadline and periodic revocation checks; this cannot recall bytes already buffered by a browser. Deployed HTTPS/Coolify routing still needs verification on the actual VPS.
+
+## Module 4.2 administration
 
 [Administration and acceptance report](docs/module42.md) lists all seven management sections, role checks, API changes, tests and remaining deployment checks. Migration `202611020004_admin_management` is additive. Video overrides survive Telegram discovery; hiding blocks direct media URLs. Platform support, packages, registration and access settings persist in PostgreSQL. Database outages now fail media/catalogue access closed so hidden content cannot leak through the old fallback.
 
@@ -45,14 +58,24 @@ Actual video metadata supplies Longest sorting; missing durations are inspected 
 
 [Video covers](docs/video-previews.md) are extracted from actual videos using FFmpeg on PATH or `FFMPEG_PATH`. The Windows wrapper also detects `.tools/ffmpeg/bin/ffmpeg.exe`; the API image installs FFmpeg. Only JPEG images are cached in memory. Unsupported source codecs still depend on browser support; Range delivery does not transcode them.
 
+## Admin access
+
+The administrator dashboard is `/hub-console` and sign-in is `/hub-console/login` (locally, `http://127.0.0.1:5174/hub-console/login`). Google sign-in through the existing Clerk project is required, followed by active PostgreSQL approval and the stored OWNER/ADMIN role. Knowing the URL or having a Google account does not grant access. See the [security verification report](docs/admin-access-security.md) for checks, MFA enrollment/recovery and pre-deployment items.
+
+## First deployment preparation
+
+Habeshan HUB has not been deployed to production. Follow [the first-production guide](docs/first-production-deployment.md) for the complete Coolify file, required runtime Telegram values, persistent session, existing database and controlled migrations. The generated hostname is not selected yet; default HTTP-only sslip.io URLs do not satisfy production HTTPS. Docker image builds remain unverified until a local Docker daemon is available.
+
+The [preparation verification report](docs/first-production-verification.md) lists changes, test results and remaining release prerequisites. No VPS deployment was performed.
+
 ## Production and structure
 
-[Operations](docs/automatic-streaming.md) and [verification history](docs/runtime-verification.md) cover discovery, health, deployment and actual versus untested checks. Compose builds the public/admin frontends, Go runtime, Node API and HTTPS reverse proxy. The API runs additive migrations and idempotent package seeding before starting. PostgreSQL uses the configured external `DATA_BASE_URL`; no duplicate database or Telegram service is created. Only the reverse proxy publishes ports. Public browsing no longer has the old operator Basic Auth gate; administrator operations require backend-verified Clerk authorization.
+[Operations](docs/automatic-streaming.md) and [verification history](docs/runtime-verification.md) cover discovery, health, deployment and actual versus untested checks. Compose builds the public/admin frontends, Go runtime, Node API and HTTPS reverse proxy. Migrations and idempotent package/first-owner bootstrap run once as a controlled operator step; API replicas never migrate on startup. PostgreSQL uses the configured external `DATA_BASE_URL`; no duplicate database or Telegram service is created. Only the reverse proxy publishes ports. Public browsing no longer has the old operator Basic Auth gate; administrator operations require backend-verified Clerk authorization.
 
 | Directory | Responsibility |
 | --- | --- |
 | `apps/web` | React catalogue, player, accounts and membership flow |
-| `apps/admin` | Independent React administrator app, production base `/admin/` |
+| `apps/admin` | Independent React administrator app, dashboard `/hub-console`, login `/hub-console/login` |
 | `services/api` | Node API, Prisma schema/migrations, authentication, statistics and streaming gateway |
 | `services/stream-go` | Existing gotd client, session, discovery/checkpoint and Range streaming |
 | `packages/shared/types` | Shared public contracts |

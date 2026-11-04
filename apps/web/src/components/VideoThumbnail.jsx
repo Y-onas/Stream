@@ -1,7 +1,9 @@
 import {useEffect,useRef,useState} from 'react';
 import {Icon} from './Icons';
+import {useAccount} from '../hooks/useAccount';
 
 export function VideoThumbnail({video,landscape=false}){
+  const account=useAccount(),membership=account.library?account.library.membership:account.membership,locked=video.accessType==='VIP'&&(!account.user||!membership||Date.parse(membership.expiresAt)<=Date.now());
   const container=useRef(null),[image,setImage]=useState(null);
   useEffect(()=>{
       setImage(null);
@@ -22,7 +24,7 @@ export function VideoThumbnail({video,landscape=false}){
       observer.observe(container.current);
       return()=>{abort.abort();clearTimeout(timer);observer.disconnect();if(objectURL)URL.revokeObjectURL(objectURL);};
   },[video.id,video.filename,video.sizeBytes,video.uploadedAt,video.artwork]);
-  return <div ref={container} className="video-thumbnail">
+  return <div ref={container} className={`video-thumbnail ${locked?'vip-locked':''}`}>
     {video.artwork||image?<img src={video.artwork||image} alt="" loading="lazy" onError={()=>setImage(null)}/>:
       <div className="missing-art"><Icon name="video" size={landscape?45:36}/><span>Habeshan <i>HUB</i></span><small>No preview available</small></div>}
   </div>;

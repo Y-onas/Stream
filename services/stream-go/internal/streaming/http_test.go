@@ -59,6 +59,33 @@ func call(h *Handler, method, value string) *httptest.ResponseRecorder {
 	return w
 }
 
+func TestRatePacingAndCancellation(t *testing.T) {
+	var calls atomic.Int32
+	h, err := NewHandler(fakeProvider(make([]byte, 4096), &calls), HTTPOptions{TrustedInternal: true, MessageID: 7, ChunkSize: 4096, Concurrency: 1, RequestTimeout: time.Second, WriteTimeout: time.Second, MaxBytesPerSecond: 32768})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	response := call(h, "GET", "bytes=0-4095")
+	if response.Body.Len() != 4096 || time.Since(started) < 100*time.Millisecond {
+		t.Fatal("media throughput ceiling was not enforced")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	request := httptest.NewRequest("GET", "http://127.0.0.1:8080/media/stream/7", nil).WithContext(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() { _ = recover() }()
+		h.ServeHTTP(httptest.NewRecorder(), request)
+	}()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("cancellation did not stop paced writes")
+	}
+}
+
 func TestHTTPExactBytesAndHeaders(t *testing.T) {
 	data := fixture()
 	var calls atomic.Int32

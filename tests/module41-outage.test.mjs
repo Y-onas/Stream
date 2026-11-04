@@ -12,5 +12,5 @@ test('database outage denies public data and media when visibility policy cannot
   api.listen(0,'127.0.0.1');await once(api,'listening');t.after(()=>{api.closeAllConnections();api.close();});const root=`http://127.0.0.1:${api.address().port}`;
   assert.equal((await fetch(root+'/healthz')).status,503);const plans=await fetch(root+'/api/plans');assert.equal(plans.status,503);assert.ok(!(await plans.text()).includes('private connection'));
   const latest=await fetch(root+'/api/videos');assert.equal(latest.status,503);
-  assert.equal((await fetch(root+'/api/videos?sort=most-viewed')).status,503);assert.equal((await fetch(root+'/api/videos/channel-42-1/stream',{headers:{Range:'bytes=0-3'}})).status,503);
+  assert.equal((await fetch(root+'/api/videos?sort=most-viewed')).status,503);assert.equal((await fetch(root+'/api/playback/01234567-1234-4234-8234-012345678901/stream',{headers:{Range:'bytes=0-3'}})).status,401);
 });

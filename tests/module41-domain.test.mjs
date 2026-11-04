@@ -16,7 +16,8 @@ test('Telegram handoff is a direct human conversation draft, not an automatic me
 
 const approved={id:'admin-db-id',email:'allowed@example.test',name:'Owner',role:'OWNER',status:'ACTIVE',clerkUserId:'allowed'};
 const googleUser=email=>({emailAddresses:[{emailAddress:email,verification:{status:'verified'}}],externalAccounts:[{provider:'oauth_google',emailAddress:email,verification:{status:'verified'}}]});
-const adminDb={administrator:{findUnique:async({where})=>where.email===approved.email?approved:null}};
+const liveSession=async()=>({id:'sess_test',userId:'allowed',status:'active',expireAt:Date.now()+3600000});
+const adminDb={administrator:{findUnique:async({where})=>where.email===approved.email||where.clerkUserId===approved.clerkUserId?approved:null}};
 test('incomplete administrator authentication configurations fail before verification or identity lookup',async t=>{
   for(const [name,config,db,getUser] of [
     ['JWT key without identity lookup',{clerkJwtKey:'test-only'},adminDb,undefined],
@@ -34,17 +35,17 @@ test('incomplete administrator authentication configurations fail before verific
 });
 
 test('Clerk authentication checks the verified Google email against the database, not an environment allowlist',async()=>{
-  const config={adminOrigin:'https://admin.example',adminIds:['outsider'],clerkSecretKey:'test-only',clerkPublishableKey:''};let claims={sub:'outsider'},google=true;
-  const auth=createAdminAuth(config,{db:adminDb,verify:async(token,options)=>{assert.deepEqual(options.authorizedParties,[config.adminOrigin]);if(token==='invalid')throw Error();return claims;},getUser:async id=>google?googleUser(id+'@example.test'):{externalAccounts:[]}});
+  const config={adminOrigin:'https://admin.example',adminIds:['outsider'],clerkSecretKey:'test-only',clerkPublishableKey:''};let claims={sub:'outsider',sid:'sess_test'},google=true;
+  const auth=createAdminAuth(config,{db:adminDb,verify:async(token,options)=>{assert.deepEqual(options.authorizedParties,[config.adminOrigin]);if(token==='invalid')throw Error();return claims;},getSession:async()=>({...await liveSession(),userId:claims.sub}),getUser:async id=>google?googleUser(id+'@example.test'):{externalAccounts:[]}});
   await assert.rejects(auth({headers:{}}),e=>e.status===401);await assert.rejects(auth({headers:{authorization:'Bearer invalid'}}),e=>e.status===401);await assert.rejects(auth({headers:{authorization:'Bearer valid'}}),e=>e.status===403);
-  claims={sub:'allowed'};google=false;await assert.rejects(auth({headers:{authorization:'Bearer valid'}}),e=>e.status===403);google=true;assert.equal((await auth({headers:{authorization:'Bearer valid'}})).id,approved.id);
+  claims={sub:'allowed',sid:'sess_test'};google=false;await assert.rejects(auth({headers:{authorization:'Bearer valid'}}),e=>e.status===403);google=true;assert.equal((await auth({headers:{authorization:'Bearer valid'}})).id,approved.id);
 });
 test('administrator verification checks an actual RSA signature and authorized origin',async()=>{
   const {privateKey,publicKey}=generateKeyPairSync('rsa',{modulusLength:2048});
   const config={adminOrigin:'https://admin.example',clerkJwtKey:publicKey.export({type:'spki',format:'pem'}),clerkPublishableKey:''};
   const encode=v=>Buffer.from(JSON.stringify(v)).toString('base64url');
   function jwt(azp){const data=encode({alg:'RS256',typ:'JWT',kid:'test'})+'.'+encode({sub:'allowed',sid:'sess_test',iss:'https://test.clerk.accounts.dev',azp,iat:Math.floor(Date.now()/1000)-1,nbf:Math.floor(Date.now()/1000)-1,exp:Math.floor(Date.now()/1000)+60});return data+'.'+sign('RSA-SHA256',Buffer.from(data),privateKey).toString('base64url');}
-  const auth=createAdminAuth(config,{db:adminDb,getUser:async()=>googleUser(approved.email)});
+  const auth=createAdminAuth(config,{db:adminDb,getSession:liveSession,getUser:async()=>googleUser(approved.email)});
   assert.equal((await auth({headers:{authorization:`Bearer ${jwt(config.adminOrigin)}`}})).id,approved.id);
   await assert.rejects(auth({headers:{authorization:`Bearer ${jwt('https://untrusted.example')}`}}),e=>e.status===401);
   await assert.rejects(auth({headers:{authorization:`Bearer ${jwt(config.adminOrigin).slice(0,-8)}invalid`}}),e=>e.status===401);
