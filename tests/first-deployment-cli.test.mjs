@@ -18,5 +18,6 @@ test('first deployment: actual API/Go configuration checks fail safely without n
  result=spawnSync(process.execPath,['scripts/start-production.mjs','--check-config'],{env:{...env,PUBLIC_ORIGIN:'http://not-secure.invalid'},encoding:'utf8',windowsHide:true,timeout:15000});assert.equal(result.status,1);assert.ok(result.stderr.includes('PUBLIC_ORIGIN'));
  const args=['-env',path.join(directory,'absent.env'),'-check-config'];
  result=spawnSync(binary,args,{env,encoding:'utf8',windowsHide:true,timeout:15000});assert.equal(result.status,0,result.stdout+result.stderr);assert.ok(result.stdout.includes('stream_configuration_valid'));
- for(const name of ['TELEGRAM_API_ID','TELEGRAM_API_HASH','TELEGRAM_SOURCE','USER_NAME']){const child=spawnSync(binary,args,{env:{...env,[name]:''},encoding:'utf8',windowsHide:true,timeout:15000});assert.equal(child.status,1,name);assert.ok((child.stdout+child.stderr).includes(name));assert.ok(!(child.stdout+child.stderr).includes(env.TELEGRAM_API_HASH));}
+ for(const name of ['TELEGRAM_API_ID','TELEGRAM_API_HASH','TELEGRAM_SOURCE']){const child=spawnSync(binary,args,{env:{...env,[name]:''},encoding:'utf8',windowsHide:true,timeout:15000});assert.equal(child.status,1,name);assert.ok((child.stdout+child.stderr).includes(name));assert.ok(!(child.stdout+child.stderr).includes(env.TELEGRAM_API_HASH));}
+ for(const support of ['', 'different_support_account']){const child=spawnSync(binary,args,{env:{...env,USER_NAME:support},encoding:'utf8',windowsHide:true,timeout:15000});assert.equal(child.status,0,child.stdout+child.stderr);}
 });

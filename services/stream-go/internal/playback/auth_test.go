@@ -7,6 +7,8 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -15,6 +17,60 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 )
+
+func TestSeekWaitsForPreviousReservationAndRechecksAccess(t *testing.T) {
+	var requests atomic.Int64
+	v, key := testVerifier(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			w.WriteHeader(200)
+			return
+		}
+		if requests.Add(1) == 1 {
+			w.WriteHeader(503)
+			json.NewEncoder(w).Encode(map[string]string{"code": "SESSION_UPSTREAM_LIMIT"})
+			return
+		}
+		json.NewEncoder(w).Encode(lease{Key: "channel-42-3", VideoID: testVideo, Until: time.Now().Add(time.Minute).UnixMilli()})
+	})
+	ctx, done, _, err := v.Open(context.Background(), httptest.NewRecorder(), signed(t, key, nil), testVideo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer done()
+	if ctx.Err() != nil || requests.Load() < 2 {
+		t.Fatal("seek did not wait for release")
+	}
+}
+
+func TestPendingSeekCancellationAndDenialDoNotStartStreams(t *testing.T) {
+	for _, revoked := range []bool{false, true} {
+		t.Run(fmt.Sprint(revoked), func(t *testing.T) {
+			var requests atomic.Int64
+			v, key := testVerifier(t, func(w http.ResponseWriter, r *http.Request) {
+				if requests.Add(1) > 1 && revoked {
+					w.WriteHeader(403)
+					return
+				}
+				w.WriteHeader(503)
+				json.NewEncoder(w).Encode(map[string]string{"code": "SESSION_UPSTREAM_LIMIT"})
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 350*time.Millisecond)
+			defer cancel()
+			started := time.Now()
+			_, done, _, err := v.Open(ctx, httptest.NewRecorder(), signed(t, key, nil), testVideo)
+			var denied Denied
+			if !errors.As(err, &denied) || done != nil {
+				t.Fatalf("pending request was authorized: %v", err)
+			}
+			if revoked && denied.Status != 403 {
+				t.Fatalf("denial lost: %v", err)
+			}
+			if time.Since(started) > time.Second {
+				t.Fatal("canceled seek waited too long")
+			}
+		})
+	}
+}
 
 const testVideo = "01234567-1234-4234-8234-012345678901"
 const testSession = "01234567-1234-4234-8234-012345678902"

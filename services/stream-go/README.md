@@ -1,4 +1,4 @@
-> For the first production deployment, use [the current guide](../../docs/first-production-deployment.md). All four Telegram variables are required. `USER_NAME` must match the authenticated account; no test source defaults remain. Historical module notes below predate the API/database foundation.
+> For the first production deployment, use [the current guide](../../docs/first-production-deployment.md). Only `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` and `TELEGRAM_SOURCE` are required by Go. `USER_NAME` is for human support only; no test source defaults remain. Historical module notes below predate the API/database foundation.
 
 # Stream Web — Modules 1 and 2
 

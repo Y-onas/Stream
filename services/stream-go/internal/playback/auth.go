@@ -35,6 +35,8 @@ type Denied struct{ Status int }
 
 func (e Denied) Error() string { return "playback authorization denied" }
 
+var errReservationBusy = errors.New("previous playback request is releasing its reservation")
+
 type Verifier struct {
 	Key                                      *rsa.PublicKey
 	Issuer, Audience, CheckURL, ServiceToken string
@@ -95,6 +97,14 @@ func (v *Verifier) check(ctx context.Context, value string, active bool, videoID
 	}
 	defer response.Body.Close()
 	if response.StatusCode != 200 {
+		if !active && response.StatusCode == 503 {
+			var failure struct {
+				Code string `json:"code"`
+			}
+			if json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&failure) == nil && failure.Code == "SESSION_UPSTREAM_LIMIT" {
+				return lease{}, errReservationBusy
+			}
+		}
 		status := response.StatusCode
 		if status != 401 && status != 403 && status != 404 {
 			status = 503
@@ -106,6 +116,27 @@ func (v *Verifier) check(ctx context.Context, value string, active bool, videoID
 		return lease{}, Denied{503}
 	}
 	return result, nil
+}
+
+// A browser seek can arrive while its canceled Range request is still releasing
+// its lease. Wait briefly for that same session; never evict a live request,
+// bypass authorization, or queue beyond the caller's cancellation/deadline.
+func (v *Verifier) openingLease(parent context.Context, value, videoID, reservationID string) (lease, error) {
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
+	defer cancel()
+	for {
+		result, err := v.check(ctx, value, false, videoID, reservationID)
+		if !errors.Is(err, errReservationBusy) {
+			return result, err
+		}
+		timer := time.NewTimer(200 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return lease{}, Denied{503}
+		case <-timer.C:
+		}
+	}
 }
 
 // Open validates every new HTTP request, then monitors the active connection.
@@ -123,8 +154,11 @@ func (v *Verifier) Open(parent context.Context, w http.ResponseWriter, value, vi
 	randomID[6] = (randomID[6] & 15) | 64
 	randomID[8] = (randomID[8] & 63) | 128
 	reservationID := fmt.Sprintf("%x-%x-%x-%x-%x", randomID[0:4], randomID[4:6], randomID[6:8], randomID[8:10], randomID[10:16])
-	initial, err := v.check(parent, value, false, videoID, reservationID)
+	initial, err := v.openingLease(parent, value, videoID, reservationID)
 	if err != nil {
+		// A canceled check may have committed its lease before its response was
+		// lost. This ID belongs only to this request; never strand it on seek.
+		v.release(reservationID)
 		return nil, nil, "", err
 	}
 	if claims.Purpose == "probe" && initial.Until > claims.ExpiresAt.UnixMilli() {

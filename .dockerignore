@@ -18,3 +18,4 @@ bin
 test-results
 **/qa
 **/qa.html
+/class

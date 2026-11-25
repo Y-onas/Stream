@@ -119,13 +119,13 @@ func run() error {
 		if !status.Authorized {
 			return errors.New("Telegram authentication was not authorized")
 		}
-		if status.User == nil || !cfg.MatchesUsername(status.User.Username) {
-			return config.ValidationError("USER_NAME does not match the authenticated Telegram account")
+		if status.User == nil {
+			return errors.New("Telegram authentication did not return an account")
 		}
 		fmt.Println("Telegram authentication: successful")
 		matches, err := discovery.Find(setupCtx, client.API(), *name)
 		if errors.Is(err, discovery.ErrSourceMissing) {
-			return err
+			return fmt.Errorf("find source %q: %w", *name, err)
 		}
 		if err != nil {
 			return fmt.Errorf("find source: %s", login.Explain(err))

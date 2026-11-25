@@ -1,5 +1,23 @@
 # Runtime verification
 
+## Selecting a different local Telegram source
+
+The source name always comes from `TELEGRAM_SOURCE` (or an explicit discovery
+CLI `-source` override). There is no built-in channel name or test-source
+fallback. Discovery searches the authenticated account's main and archived
+dialogs by exact, case-insensitive title. Support usernames do not participate.
+
+Native runtime commands can select the appropriate authorized session and a
+separate catalogue through `telegramSessionPath` and `cataloguePath` in ignored
+`.local/runtime.json`. Relative paths resolve against the repository root;
+explicit process environment paths still take precedence. Source-bound
+catalogues are not silently emptied or reused for a different Telegram ID.
+Keep old session/catalogue files for recovery when switching sources.
+
+The discovery CLI does not read the saved streaming catalogue. A source-not-found
+error there concerns the requested title/session access, not old catalogue data.
+The error now quotes the requested title to make spelling mismatches visible.
+
 Checks performed locally on 2026-10-31 (Africa/Nairobi). Results below distinguish real Telegram checks from deterministic fixtures and prepared deployment configuration.
 
 | Check | Result |

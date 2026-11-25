@@ -15,12 +15,12 @@ services:
       TELEGRAM_API_ID: ${TELEGRAM_API_ID:?required}
       TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:?required}
       TELEGRAM_SOURCE: ${TELEGRAM_SOURCE:?required}
-      USER_NAME: ${USER_NAME:?required}
       TELEGRAM_SESSION_PATH: ${TELEGRAM_SESSION_PATH:-/sessions/telegram.session.json}
       CATALOGUE_PATH: ${CATALOGUE_PATH:-/state/catalogue.json}
       STREAM_SERVICE_TOKEN: ${STREAM_SERVICE_TOKEN:?required}
       STREAM_LISTEN: 0.0.0.0:8080
       SYNC_INTERVAL: ${SYNC_INTERVAL:-30s}
+      TELEGRAM_FILE_CONNECTIONS: ${TELEGRAM_FILE_CONNECTIONS:-32}
       PLAYBACK_PUBLIC_KEY_PATH: /run/secrets/playback-public.pem
       PLAYBACK_CHECK_URL: http://api:3000/internal/playback/check
       PLAYBACK_ISSUER: ${PLAYBACK_ISSUER:-habeshan-hub}
@@ -63,6 +63,7 @@ services:
       DATA_BASE_DIRECT_URL: ${DATA_BASE_DIRECT_URL:-}
       MEMBERSHIP_CURRENCY: ${MEMBERSHIP_CURRENCY:-ETB}
       TELEGRAM_SUPPORT_USERNAME: ${TELEGRAM_SUPPORT_USERNAME:-}
+      USER_NAME: ${USER_NAME:-}
       APP_TIMEZONE: ${APP_TIMEZONE:-Africa/Nairobi}
       ADMIN_ORIGIN: https://${PUBLIC_HOST:?required}
       CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}

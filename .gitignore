@@ -19,4 +19,5 @@ dist/
 .local/
 test-results/
 playwright-report/
+/class/
 *.tsbuildinfo

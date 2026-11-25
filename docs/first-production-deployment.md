@@ -57,7 +57,7 @@ There are no duplicated API/Go/frontend environment templates: the complete Comp
 | `TELEGRAM_API_ID` | Go | Yes | Server-only identifier | Your positive 32-bit Telegram app ID; template is blank |
 | `TELEGRAM_API_HASH` | Go | Yes | Yes | Your 32-hex-character Telegram API hash; blank template |
 | `TELEGRAM_SOURCE` | Go | Yes | Server-side source metadata | Exact accessible group/channel **display title**, matching the current discovery implementation; not an invite URL or numeric ID; blank template |
-| `USER_NAME` | Go | Yes | Server-side account identity | Intended account's primary Telegram username; 5–32 ASCII letters/digits/underscores, first a letter; optional `@`; must match the saved account; blank template |
+| `USER_NAME` | API/default support settings | No | Human support contact | Support username only; independent of Telegram API credentials, source and saved login |
 | `TELEGRAM_SESSION_PATH` | Go/interactive CLI | Default supplied | File holds a secret | `/sessions/telegram.session.json`; configurable filename within the mounted directory |
 | `CATALOGUE_PATH` | Go | Default supplied | Private metadata | `/state/catalogue.json`; checkpoint, not video cache |
 | `STREAM_SERVICE_TOKEN` | API + Go | Yes | Yes | Independent random secret of at least 32 characters; blank template |
@@ -67,7 +67,7 @@ There are no duplicated API/Go/frontend environment templates: the complete Comp
 | `STREAM_HEALTH_URL` | Go health utility | Optional | No | Default `http://127.0.0.1:8080/healthz`, loopback only |
 | `SYNC_INTERVAL` | Go | Optional | No | `30s`; at least five seconds |
 
-There is no built-in test source fallback. Changing any of the four Telegram values requires configuration/restart only, not source edits. A new account needs its own authorized session; a changed source needs a separate/backed-up source-bound catalogue checkpoint. Do not silently erase the old state. `USER_NAME` no longer names the first administrator: existing administrator names are stored in PostgreSQL and are preserved.
+There is no built-in test source fallback. Go requires only `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` and `TELEGRAM_SOURCE`, plus its authorized session. A new account needs its own authorized session; a changed source needs a separate/backed-up source-bound catalogue checkpoint. Do not silently erase the old state. `USER_NAME` is a human support contact only. Existing administrator names and saved support settings remain in PostgreSQL.
 
 ### Database, Clerk and platform
 
@@ -83,7 +83,7 @@ There is no built-in test source fallback. Changing any of the four Telegram val
 | `EMAIL` | Controlled migration/bootstrap | Conditional | Administrator identity | Required only to approve the first OWNER in an administrator-empty database; existing bootstrap marker/owners win; blank template |
 | `MEMBERSHIP_CURRENCY` | API/migration seed | Optional | No | `ETB`, preserving the selected product currency |
 | `APP_TIMEZONE` | API/default settings | Optional | No | `Africa/Nairobi`; stored platform settings remain authoritative |
-| `TELEGRAM_SUPPORT_USERNAME` | API/default settings | Optional | No | Actual human support username, separate from `USER_NAME`; leave blank if unset |
+| `TELEGRAM_SUPPORT_USERNAME` | API/default settings | Optional | No | Dedicated human support override; when blank, `USER_NAME` supplies the default contact |
 | `FFMPEG_PATH` | API/native development | Optional | No | Default `ffmpeg` on PATH; API image installs it; no frontend video transcoding is added |
 
 Do not rename `DATA_BASE_URL` or Clerk variables. Do not use a second empty database as a quick fix. Do not make PostgreSQL public to solve a connection problem. Use the selected provider's supported TLS settings; do not disable certificate verification. The old unused `DATABASE_SSL_MODE` name does not configure the driver; connection URL/provider settings do.
@@ -147,7 +147,7 @@ The Go image creates `/sessions` and `/state` owned by 10001. New named volumes 
 
 This is a human operator step; the agent did not contact Telegram or collect login codes during preparation.
 
-1. In a private local file such as `.env.production.local`, set the **four exact Telegram variables** to the intended real values. Do not copy a template over an existing `.env`. The account must have a primary username and source/history access.
+1. In a private local file such as `.env.production.local`, set **TELEGRAM_API_ID, TELEGRAM_API_HASH and TELEGRAM_SOURCE** to the intended real values. Do not copy a template over an existing `.env`. The authenticated account must have source/history access; it does not need a primary username.
 2. Build the existing discovery CLI locally. Use a fresh dedicated session file if the local daemon already uses another file:
 
 ```powershell
@@ -156,7 +156,7 @@ npm.cmd run go:build
 .\bin\stream-discover.exe -env .env.production.local -session .sessions/production/telegram.session.json -mode find
 ```
 
-3. Enter phone/code/two-step password only into its hidden interactive terminal prompts. Never put them in flags, environment templates, chat or logs. The CLI confirms that `USER_NAME` matches the authorized account and that the source is accessible.
+3. Enter phone/code/two-step password only into its hidden interactive terminal prompts. Never put them in flags, environment templates, chat or logs. The CLI confirms Telegram authentication and source/history access. `USER_NAME` does not participate in this check.
 4. Securely transfer the resulting session to a private Hub-only server staging location. Do not bake it into an image or publish it through the web container.
 5. After the first Hub containers exist, stop **only this Hub Go container** before installing the session. Use its actual name from Coolify. The following are operator commands, not commands executed by the agent. Fill in only this resource's names/paths:
 
@@ -248,7 +248,7 @@ Restore session/checkpoint backups into the correct stopped Go resource with cor
 | Symptom | Check |
 | --- | --- |
 | Missing-variable startup error | Supply the exact named runtime variable; no Telegram test fallback exists |
-| `USER_NAME` account mismatch | Correct the intended primary username/session pair; do not bypass the binding |
+| Source inaccessible | Check the exact source title and the authenticated account's source/history permissions; the support username has no effect |
 | Session permission failure | Correct UID 10001 and 0700/0600 on this volume/file only; verify no second writer |
 | Source not found/ambiguous | Use the exact source display title; verify intended account membership/history access |
 | Catalogue belongs to another source | Restore/review source-bound state or provision a separate checkpoint; do not silently discard it |

@@ -1,5 +1,6 @@
 import React,{useState,useEffect} from 'react';
 import {createRoot} from 'react-dom/client';
+import './design/fonts.css';
 import './styles/main.css';
 import {AdminModule} from './Module42';
 const base=import.meta.env.BASE_URL.replace(/\/$/,'');

@@ -4,7 +4,7 @@ The Node API uses Prisma/PostgreSQL for accounts, metadata, qualified views, mem
 
 Run `npm.cmd run db:generate`, `npm.cmd run db:migrate`, `node scripts/playback-keys.mjs`, then `npm.cmd run runtime:api` from the repository root for development. The production image performs additive migrations and idempotent seeding before listening. Root `DATA_BASE_URL` is preserved; direct migration connections are separate from pooled application queries.
 
-Administrator Google authentication uses Clerk plus the active approved email stored in `hh_administrators`. `EMAIL`/`USER_NAME` bootstrap the first owner once. Later approvals and platform settings are managed in the protected admin application. No public administrator registration or environment allowlist grants access.
+Administrator Google authentication uses Clerk plus the active approved email stored in `hh_administrators`. `EMAIL` approves the first owner once; `USER_NAME` is a human support contact only. Later approvals and platform settings are managed in the protected admin application. No public administrator registration or environment allowlist grants access.
 
 Catalogue, metadata and media requests enforce database publication/availability/access settings. Database outages fail closed; hidden media cannot fall back to an unfiltered Go catalogue. Liveness is `/livez`; dependency readiness is `/healthz`.
 

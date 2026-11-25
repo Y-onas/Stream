@@ -40,7 +40,13 @@ export function createAPI({streamOrigin,streamToken,gatewayToken='',publicOrigin
       if(url.pathname==='/internal/playback/check'){
         if(!equal(String(req.headers.authorization||''),'Bearer '+streamToken))throw new HttpError(401,'Unauthorized');
         if(req.method!=='POST'||!application)throw new HttpError(503,'Playback verification is unavailable.');
-        const data=await body(req);return json(res,200,await application.playback.introspect(data.grant,data.active===true,data.reservationId));
+        const data=await body(req);if(controller.signal.aborted)return;
+        const result=await application.playback.introspect(data.grant,data.active===true,data.reservationId);
+        // A seek can cancel Go's opening check while PostgreSQL is committing
+        // the reservation. Release that newly created lease after the commit;
+        // a canceled renewal must retain the existing stream's bounded lease.
+        if(controller.signal.aborted){if(data.active!==true)await application.playback.capacity.release(data.reservationId);return;}
+        return json(res,200,result);
       }
       if(['/internal/playback/release','/internal/playback/work'].includes(url.pathname)){
         if(!equal(String(req.headers.authorization||''),'Bearer '+streamToken))throw new HttpError(401,'Unauthorized');

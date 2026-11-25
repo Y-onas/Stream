@@ -1,4 +1,4 @@
-> First deployment preparation now supersedes earlier deployment/bootstrap descriptions: [current guide](first-production-deployment.md). Use `compose.coolify.yaml` alone. `USER_NAME` is Telegram account configuration; migrations do not run on API startup. Prior test results below describe their dated local verification.
+> First deployment preparation now supersedes earlier deployment/bootstrap descriptions: [current guide](first-production-deployment.md). Use `compose.coolify.yaml` alone. `USER_NAME` is optional human support configuration; migrations do not run on API startup. Prior test results below describe their dated local verification.
 
 # Current route/security update
 
@@ -12,7 +12,7 @@ Implemented on 2026-11-02 as an extension of Module 4.1. The existing React appl
 
 The exact supplied `CLERK_PUBLIC_KEY`, `CLERK_SECRET_KEY`, `EMAIL` and `USER_NAME` names are supported. Root `.env` was preserved, and values were not printed. `CLERK_PUBLISHABLE_KEY` remains a compatibility alias for the public key. Only the publishable key is returned to the admin frontend; email bootstrap values, server keys and database credentials are never public settings.
 
-The migration/startup command creates the **first owner only** from `EMAIL` and `USER_NAME`. Email is normalized and saved to `hh_administrators`. A persistent bootstrap timestamp plus a transaction-scoped database lock prevents additional environment-driven administrators, including concurrent startup. Changing `EMAIL` later does not add or replace an administrator.
+The migration/startup command creates the **first owner only** from `EMAIL`. `USER_NAME` is used only for the human support contact. Email is normalized and saved to `hh_administrators`. A persistent bootstrap timestamp plus a transaction-scoped database lock prevents additional environment-driven administrators, including concurrent startup. Changing `EMAIL` later does not add or replace an administrator.
 
 Later administrator approvals happen only through the owner-only Administrators panel. There is no public administrator registration endpoint or sign-up form. Normal public username/password accounts remain a separate system.
 

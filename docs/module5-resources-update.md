@@ -1,4 +1,4 @@
-> First deployment preparation now supersedes earlier deployment/bootstrap descriptions: [current guide](first-production-deployment.md). Use `compose.coolify.yaml` alone. `USER_NAME` is Telegram account configuration; migrations do not run on API startup. Prior test results below describe their dated local verification.
+> First deployment preparation now supersedes earlier deployment/bootstrap descriptions: [current guide](first-production-deployment.md). Use `compose.coolify.yaml` alone. `USER_NAME` is optional human support configuration; migrations do not run on API startup. Prior test results below describe their dated local verification.
 
 # Module 5 — Resource and streaming speed update
 

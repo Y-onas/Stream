@@ -6,20 +6,24 @@ import path from 'node:path';
 const root=fileURLToPath(new URL('../',import.meta.url));process.chdir(root);
 const local=path.join(root,'.local');mkdirSync(local,{recursive:true});
 const configPath=path.join(local,'runtime.json');
-if(!existsSync(configPath))writeFileSync(configPath,JSON.stringify({apiOrigin:'http://127.0.0.1:3000',streamOrigin:'http://127.0.0.1:8081',streamToken:randomBytes(32).toString('hex'),gatewayToken:randomBytes(32).toString('hex')},null,2),{mode:0o600,flag:'wx'});
+if(!existsSync(configPath))writeFileSync(configPath,JSON.stringify({apiOrigin:'http://127.0.0.1:3000',streamOrigin:'http://127.0.0.1:18081',streamToken:randomBytes(32).toString('hex'),gatewayToken:randomBytes(32).toString('hex')},null,2),{mode:0o600,flag:'wx'});
 const settings=JSON.parse(readFileSync(configPath,'utf8'));
 const env={...process.env,STREAM_ORIGIN:settings.streamOrigin,STREAM_LISTEN:new URL(settings.streamOrigin).host,STREAM_SERVICE_TOKEN:settings.streamToken,API_GATEWAY_TOKEN:settings.gatewayToken,PUBLIC_ORIGIN:'http://127.0.0.1:5173',API_PORT:new URL(settings.apiOrigin).port};
 env.PLAYBACK_PUBLIC_KEY_PATH ||= path.join(local,'playback-public.pem');
 env.PLAYBACK_PRIVATE_KEY_PATH ||= path.join(local,'playback-private.pem');
 env.PLAYBACK_CHECK_URL ||= settings.apiOrigin+'/internal/playback/check';
+// These commands run natively, outside Docker. Do not read /sessions or /state
+// from the production Compose .env; reuse the existing local authorization/state.
+env.TELEGRAM_SESSION_PATH ||= path.resolve(root,settings.telegramSessionPath||'.sessions/telegram.session.json');
+env.CATALOGUE_PATH ||= path.resolve(root,settings.cataloguePath||'.local/runtime/catalogue.json');
 const portableFFmpeg=path.join(root,'.tools/ffmpeg/bin',process.platform==='win32'?'ffmpeg.exe':'ffmpeg');
 if(!env.FFMPEG_PATH&&existsSync(portableFFmpeg))env.FFMPEG_PATH=portableFFmpeg;
-const [action]=process.argv.slice(2);const windows=process.platform==='win32';
+const [action,...extra]=process.argv.slice(2);const windows=process.platform==='win32';
 if(action==='build'){
   const localGo=path.join(root,'.tools/go/bin',windows?'go.exe':'go');
   if(existsSync(localGo)){env.GOPATH=path.join(root,'.tools/gopath');env.GOCACHE=path.join(root,'.tools/gocache');}
   const p=spawn(existsSync(localGo)?localGo:'go',['build','-o',path.join(root,'bin',windows?'stream-service.exe':'stream-service'),'./cmd/stream-service'],{cwd:path.join(root,'services/stream-go'),env,stdio:'inherit'});p.on('exit',code=>process.exitCode=code??1);
 }else if(action==='go'||action==='api'){
-  const p=action==='go'?spawn(path.join(root,'bin',windows?'stream-service.exe':'stream-service'),[],{env,stdio:'inherit'}):spawn(process.execPath,['services/api/src/server.mjs'],{env,stdio:'inherit'});
+  const p=action==='go'?spawn(path.join(root,'bin',windows?'stream-service.exe':'stream-service'),extra,{env,stdio:'inherit'}):spawn(process.execPath,['services/api/src/server.mjs'],{env,stdio:'inherit'});
   p.on('error',()=>{console.error('Runtime could not start; check build and configuration.');process.exitCode=1;});p.on('exit',code=>process.exitCode=code??1);
 }else throw Error('Use build, go or api');

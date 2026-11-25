@@ -3,6 +3,17 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import {once} from 'node:events';
 import {createAPI} from '../services/api/src/server.mjs';
+
+test('a canceled opening check releases a lease committed late; canceled renewals keep existing leases',async t=>{
+ for(const active of [false,true]){
+  let entered,complete;const started=new Promise(resolve=>{entered=resolve;}),pendingCommit=new Promise(resolve=>{complete=resolve;}),released=[];
+  const handler=createAPI({streamOrigin:'http://unused.test',streamToken:'s'.repeat(40),gatewayToken:'g'.repeat(40),application:{close(){},playback:{introspect:async()=>{entered();await pendingCommit;return {key:'fixture',videoId:sessionId,leaseUntil:Date.now()+60000};},capacity:{release:async id=>released.push(id)}}},thumbnails:{close(){}}});
+  const server=http.createServer(handler);let disconnected;const closed=new Promise(resolve=>{disconnected=resolve;});server.on('request',(req,res)=>res.once('close',disconnected));server.listen(0,'127.0.0.1');await once(server,'listening');
+  const abort=new AbortController(),request=fetch(`http://127.0.0.1:${server.address().port}/internal/playback/check`,{method:'POST',headers:{Authorization:'Bearer '+'s'.repeat(40),'Content-Type':'application/json'},body:JSON.stringify({grant:'fixture',reservationId:sessionId,active}),signal:abort.signal}).catch(()=>null);
+  try{await started;abort.abort();await closed;complete();await request;await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(released,active?[]:[sessionId]);}
+  finally{complete();server.closeAllConnections();server.close();await handler.close();}
+ }
+});
 const streamToken='s'.repeat(40),gatewayToken='g'.repeat(40),videoId='01234567-1234-4234-8234-012345678901',sessionId='01234567-1234-4234-8234-012345678902';
 
 test('open media bodies do not consume the short API request admission counter',{timeout:15000},async t=>{

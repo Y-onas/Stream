@@ -35,19 +35,21 @@ import (
 
 type runtime struct {
 	client *telegram.Client
+	files  *streaming.FileConnections
 	source discovery.Source
 	ctx    context.Context
 }
 type service struct {
-	mu            sync.RWMutex
-	current       *runtime
-	store         *catalogue.Store
-	token         string
-	activeMedia   atomic.Int64
-	poll          time.Duration
-	authorization *playback.Verifier
-	requests      atomic.Uint64
-	errors        atomic.Uint64
+	mu              sync.RWMutex
+	current         *runtime
+	store           *catalogue.Store
+	token           string
+	activeMedia     atomic.Int64
+	poll            time.Duration
+	fileConnections int
+	authorization   *playback.Verifier
+	requests        atomic.Uint64
+	errors          atomic.Uint64
 }
 
 func env(key, fallback string) string {
@@ -152,7 +154,7 @@ func (s *service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		s.authorization.Source(key, status)
 	}
-	backend, err := streaming.NewTelegramBackend(setup, current.client, current.source, record.MessageID, 1, 20*time.Second)
+	backend, err := streaming.NewTelegramBackendWithConnections(setup, current.client, current.source, record.MessageID, current.files, 20*time.Second)
 	done()
 	if err != nil {
 		if ctx.Err() == nil {
@@ -164,7 +166,7 @@ func (s *service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer backend.Close()
 	// No artificial video bitrate cap: backpressure and bounded parts control
 	// buffering while the source and available network determine throughput.
-	handler, err := streaming.NewHandler(backend, streaming.HTTPOptions{TrustedInternal: true, MessageID: record.MessageID, ChunkSize: 262144, Concurrency: 1, RequestTimeout: 3 * time.Hour, WriteTimeout: 15 * time.Second, OnSourceError: reportError, OnSourceReady: func() { s.authorization.Source(key, "AVAILABLE") }})
+	handler, err := streaming.NewHandler(backend.RequestProvider(), streaming.HTTPOptions{TrustedInternal: true, MessageID: record.MessageID, ChunkSize: 256 * 1024, SteadyChunkSize: streaming.TelegramWindow, Concurrency: 1, RequestTimeout: 3 * time.Hour, WriteTimeout: 15 * time.Second, OnSourceError: reportError, OnSourceReady: func() { s.authorization.Source(key, "AVAILABLE") }})
 	if err != nil {
 		respond(w, 500, map[string]string{"message": "Stream initialization failed"})
 		return
@@ -242,8 +244,8 @@ func (s *service) connect(ctx context.Context, cfg config.Config, session, sourc
 		if !status.Authorized {
 			return errors.New("saved session is not authorized; run interactive discovery login first")
 		}
-		if status.User == nil || !cfg.MatchesUsername(status.User.Username) {
-			return config.ValidationError("USER_NAME does not match the saved Telegram account; authenticate the intended account or correct USER_NAME")
+		if status.User == nil {
+			return errors.New("Telegram authentication did not return an account")
 		}
 		sources, err := discovery.Find(setup, client.API(), sourceName)
 		if err != nil {
@@ -264,7 +266,12 @@ func (s *service) connect(ctx context.Context, cfg config.Config, session, sourc
 		}
 		work, stop := context.WithCancel(clientCtx)
 		defer stop()
-		s.set(&runtime{client: client, source: source, ctx: work})
+		files, err := streaming.NewFileConnections(work, client, s.fileConnections)
+		if err != nil {
+			return err
+		}
+		defer files.Close()
+		s.set(&runtime{client: client, files: files, source: source, ctx: work})
 		defer s.set(nil)
 		history := discovery.History(client.API(), source)
 		fetchPage := func(ctx context.Context, offset, limit int) ([]tg.MessageClass, error) {
@@ -334,6 +341,10 @@ func run() error {
 	if err != nil || poll < 5*time.Second {
 		return config.ValidationError("SYNC_INTERVAL must be at least 5s")
 	}
+	fileConnections, err := strconv.Atoi(env("TELEGRAM_FILE_CONNECTIONS", "32"))
+	if err != nil || fileConnections < 1 || fileConnections > 256 {
+		return config.ValidationError("TELEGRAM_FILE_CONNECTIONS must be between 1 and 256")
+	}
 	store, err := catalogue.Open(env("CATALOGUE_PATH", ".local/runtime/catalogue.json"))
 	if err != nil {
 		return err
@@ -357,7 +368,7 @@ func run() error {
 	if err = verifier.ConfigureKeys(os.Getenv("PLAYBACK_KEY_ID"), os.Getenv("PLAYBACK_PREVIOUS_KEYS_PATH"), tolerance); err != nil {
 		return err
 	}
-	s := &service{store: store, token: token, poll: poll, authorization: verifier}
+	s := &service{store: store, token: token, poll: poll, fileConnections: fileConnections, authorization: verifier}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	address := env("STREAM_LISTEN", "127.0.0.1:8080")
@@ -377,8 +388,15 @@ func run() error {
 		return nil
 	}
 	server := &http.Server{Addr: address, Handler: s, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 8192, BaseContext: func(net.Listener) context.Context { return ctx }}
+	// Bind before starting Telegram work or reporting success. Windows can reserve
+	// an otherwise unused port, so a failed bind needs a safe configuration error.
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return config.ValidationError("STREAM_LISTEN cannot be opened; choose a free, non-reserved port (for local runtime commands, update .local/runtime.json)")
+	}
+	defer listener.Close()
 	result := make(chan error, 1)
-	go func() { result <- server.ListenAndServe() }()
+	go func() { result <- server.Serve(listener) }()
 	workerDone := make(chan struct{})
 	go func() {
 		defer close(workerDone)

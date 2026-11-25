@@ -15,6 +15,8 @@ npm.cmd run runtime:build
 npm.cmd run runtime:go
 ```
 
+The native runtime commands use `.sessions/telegram.session.json` and `.local/runtime/catalogue.json`, independently of Docker's `/sessions` and `/state` paths in `.env`. The local stream endpoint is stored in `.local/runtime.json` (new configurations use port 18081). If Windows reserves that port, select another available port in that file and restart both `runtime:go` and `runtime:api`. Run `npm.cmd run runtime:go -- -check-config` to validate local Go configuration without contacting Telegram.
+
 In separate terminals:
 
 ```powershell
@@ -26,7 +28,7 @@ Open [Habeshan HUB](http://127.0.0.1:5173). The Go service scans accessible hist
 
 For first Telegram login only, use `npm.cmd run go:build`, then `npm.cmd run stream -- -mode find`. Enter phone/code/password in that terminal. Stop the legacy streamer before starting the daemon with the same session. Local wrappers keep private generated service tokens in ignored `.local/runtime.json`.
 
-The separate administrator application runs with `npm.cmd run dev:admin` at [the local admin URL](http://127.0.0.1:5174/hub-console/login). Module 4.2 now provides video/user/membership/comment management, real analytics, database settings and append-only audit history. Google sign-in uses `CLERK_PUBLIC_KEY` and `CLERK_SECRET_KEY`. The controlled migration step uses `EMAIL` to approve the first owner once; `USER_NAME` identifies the Telegram account; later administrator approvals are made only inside the dashboard and checked against PostgreSQL. There is no public administrator registration. [Full implementation report](docs/module42.md).
+The separate administrator application runs with `npm.cmd run dev:admin` at [the local admin URL](http://127.0.0.1:5174/hub-console/login). Module 4.2 now provides video/user/membership/comment management, real analytics, database settings and append-only audit history. Google sign-in uses `CLERK_PUBLIC_KEY` and `CLERK_SECRET_KEY`. The controlled migration step uses `EMAIL` to approve the first owner once; `USER_NAME` supplies the human Telegram support contact; later administrator approvals are made only inside the dashboard and checked against PostgreSQL. There is no public administrator registration. [Full implementation report](docs/module42.md).
 
 ## Account-owned profile
 

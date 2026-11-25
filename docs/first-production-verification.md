@@ -14,16 +14,16 @@ Default CPU/RAM quotas and bitrate throttling remain absent. `compose.resources.
 
 The single root `.env.example` is the central template; duplicate frontend/API/Go templates were unnecessary. [Guide section 4](first-production-deployment.md#4-environment-template-and-all-runtime-variables) documents each variable's exact name, owning service, requirement, secret status and timing. Compose supplies internal addresses; both frontends use same-origin API requests and runtime Clerk configuration, so they need no secret build arguments or rebuild to change a hostname.
 
-All four Telegram values are runtime-required with no test fallback:
+Three Telegram values are runtime-required with no test fallback:
 
 | Variable | Validation |
 | --- | --- |
 | `TELEGRAM_API_ID` | Positive 32-bit app ID |
 | `TELEGRAM_API_HASH` | 32 hexadecimal characters |
 | `TELEGRAM_SOURCE` | Nonblank, bounded display title without control characters, matching existing source discovery |
-| `USER_NAME` | Primary Telegram username, optionally prefixed with `@`; checked against the authenticated account |
+| `USER_NAME` | Optional human support contact only; not used by Go or checked against the authenticated account |
 
-Missing/invalid values report field names without echoing supplied credentials. The exact names `DATA_BASE_URL`, existing Clerk keys and signing/session variables are preserved. `USER_NAME` is passed only to Go and no longer used as an administrator display name. Production API preflight checks HTTPS origins, external database TLS settings, independent service secrets, production Clerk key prefixes and matching signing keys. `-check-config` / `--check-config` support local validation without contacting Telegram or running migrations.
+Missing/invalid values report field names without echoing supplied credentials. The exact names `DATA_BASE_URL`, existing Clerk keys and signing/session variables are preserved. `USER_NAME` is passed only to the API as a support contact fallback. Production API preflight checks HTTPS origins, external database TLS settings, independent service secrets, production Clerk key prefixes and matching signing keys. `-check-config` / `--check-config` support local validation without contacting Telegram or running migrations.
 
 The `telegram_session` volume mounts at `/sessions`; `catalogue_state` mounts at `/state`. Coolify scopes actual volume names by the resource/project. Go runs as UID/GID 10001, with one writer for both session and checkpoint. The guide uses the existing interactive CLI, hidden authentication prompts and stopped-service provisioning; it introduces no browser/remote authentication flow. Private signing material is read-only in API only; the public key is read-only in API and Go. No video bytes are persistently cached.
 
@@ -81,7 +81,7 @@ Local evidence: `.local/qa/first-deployment-node-sequential.tap`, `first-deploym
 
 1. Review the release; complete image builds on an available local/CI Docker engine and resolve the blockers below.
 2. Create a Hub project/resource from the reviewed Git repository using Docker Compose, Base Directory `/`, Compose Location `/compose.coolify.yaml`. Do not merge the standalone file or enable automatic deployment/hooks for initialization.
-3. Enter this resource's runtime variables from `.env.example`, including the four real Telegram values, existing database, independent secrets, production Clerk keys and authorized hostname. Keep secrets out of build arguments. Set `PLAYBACK_DRAIN=1` during verification.
+3. Enter this resource's runtime variables from `.env.example`, including the three real Telegram credentials/source values, existing database, independent secrets, production Clerk keys and authorized hostname. Keep secrets out of build arguments. Set `PLAYBACK_DRAIN=1` during verification.
 4. Provision the reviewed read-only signing files with the documented container-user permissions and preserve the two Hub-only named volumes. Route only proxy internal port 80 through Coolify's existing TLS ingress.
 5. Deploy only Hub after review. In one API container, inspect migration status and run the controlled migration command. Provision the intended Telegram session with the documented single-writer procedure.
 6. Require integrated HTTPS `/readyz` success; verify approved/unapproved administrator access, Free/VIP playback, seeking, per-account VIP sessions and separate analytics. Remove drain and share the address only after acceptance.

@@ -1,7 +1,7 @@
 import {config as readDotenv} from 'dotenv';
 import {fileURLToPath} from 'node:url';
 const root=new URL('../../../',import.meta.url);
-const allowed=['DATA_BASE_URL','DATA_BASE_DIRECT_URL','MEMBERSHIP_CURRENCY','TELEGRAM_SUPPORT_USERNAME','CLERK_PUBLIC_KEY','EMAIL','CLERK_SECRET_KEY','CLERK_JWT_KEY','CLERK_PUBLISHABLE_KEY','ADMIN_ORIGIN','APP_TIMEZONE','DATABASE_POOL_MAX','PLAYBACK_PRIVATE_KEY_PATH','PLAYBACK_PUBLIC_KEY_PATH','PLAYBACK_GRANT_TTL_SECONDS','PLAYBACK_ISSUER','PLAYBACK_AUDIENCE','PLAYBACK_KEY_ID','PLAYBACK_PREVIOUS_KEYS_PATH','PLAYBACK_CLOCK_TOLERANCE_SECONDS','PLAYBACK_SESSION_UPSTREAM_LIMIT','PLAYBACK_DRAIN','PUBLIC_ORIGIN','STREAM_ORIGIN','STREAM_SERVICE_TOKEN','API_GATEWAY_TOKEN','API_HOST','API_PORT','FFMPEG_PATH'];
+const allowed=['DATA_BASE_URL','DATA_BASE_DIRECT_URL','MEMBERSHIP_CURRENCY','USER_NAME','TELEGRAM_SUPPORT_USERNAME','CLERK_PUBLIC_KEY','EMAIL','CLERK_SECRET_KEY','CLERK_JWT_KEY','CLERK_PUBLISHABLE_KEY','ADMIN_ORIGIN','APP_TIMEZONE','DATABASE_POOL_MAX','PLAYBACK_PRIVATE_KEY_PATH','PLAYBACK_PUBLIC_KEY_PATH','PLAYBACK_GRANT_TTL_SECONDS','PLAYBACK_ISSUER','PLAYBACK_AUDIENCE','PLAYBACK_KEY_ID','PLAYBACK_PREVIOUS_KEYS_PATH','PLAYBACK_CLOCK_TOLERANCE_SECONDS','PLAYBACK_SESSION_UPSTREAM_LIMIT','PLAYBACK_DRAIN','PUBLIC_ORIGIN','STREAM_ORIGIN','STREAM_SERVICE_TOKEN','API_GATEWAY_TOKEN','API_HOST','API_PORT','FFMPEG_PATH'];
 export function loadApplicationEnv(){
   const values={};
   for(const path of [new URL('.env',root),new URL('.local/module4.env',root)])readDotenv({path:fileURLToPath(path),processEnv:values,override:true,quiet:true});
@@ -10,14 +10,14 @@ export function loadApplicationEnv(){
 loadApplicationEnv();
 export const applicationConfig=()=>({
   currency:process.env.MEMBERSHIP_CURRENCY||'ETB',
-  supportUsername:process.env.TELEGRAM_SUPPORT_USERNAME||'',
+  supportUsername:process.env.TELEGRAM_SUPPORT_USERNAME||process.env.USER_NAME||'',
   adminOrigin:process.env.ADMIN_ORIGIN||(process.env.NODE_ENV==='production'?process.env.PUBLIC_ORIGIN:'http://127.0.0.1:5174'),
   timezone:process.env.APP_TIMEZONE||'Africa/Nairobi',
   clerkSecretKey:process.env.CLERK_SECRET_KEY,
   clerkJwtKey:process.env.CLERK_JWT_KEY,
   clerkPublishableKey:process.env.CLERK_PUBLIC_KEY||process.env.CLERK_PUBLISHABLE_KEY||'',
   bootstrapEmail:process.env.EMAIL||'',
-  // USER_NAME belongs to the Telegram account, not the administrator identity.
+  // USER_NAME is a support contact, not a Telegram login or administrator identity.
   // Existing administrator display names stay in PostgreSQL.
   bootstrapName:'',
   publicOrigin:process.env.PUBLIC_ORIGIN,
