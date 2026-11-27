@@ -20,6 +20,39 @@ func testDoc() *tg.Document {
 	return &tg.Document{ID: 99, AccessHash: 77, FileReference: []byte("old"), DCID: 2, Size: 8192, MimeType: "video/mp4"}
 }
 
+func TestRequestProviderUsesFreshDocumentOnce(t *testing.T) {
+	doc := testDoc()
+	lookups := 0
+	b := &TelegramBackend{selected: fileInfo(7, doc), initial: doc, partTimeout: time.Second, resolve: func(context.Context) (*tg.Document, error) {
+		lookups++
+		return testDoc(), nil
+	}}
+	p := b.RequestProvider()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := p.Open(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatal("canceled request accepted", err)
+	}
+	file, reader, err := p.Open(context.Background())
+	if err != nil || file.DocumentID != 99 || lookups != 0 {
+		t.Fatal("initial metadata fetched twice", lookups, err)
+	}
+	r := reader.(*telegramReader)
+	r.doc.FileReference[0] = 'x'
+	r.doc.DCID = 4
+	if doc.DCID != 2 || string(doc.FileReference) != "old" {
+		t.Fatal("reader mutated shared metadata")
+	}
+	_, next, err := p.Open(context.Background())
+	if err != nil || lookups != 1 || next.(*telegramReader).doc.DCID != 2 {
+		t.Fatal("reused provider failed to refresh", lookups, err)
+	}
+	b.resolve = func(context.Context) (*tg.Document, error) { changed := testDoc(); changed.ID++; return changed, nil }
+	if _, _, err := p.Open(context.Background()); !errors.Is(err, ErrChanged) {
+		t.Fatal("replacement document accepted", err)
+	}
+}
+
 func TestDocumentValidation(t *testing.T) {
 	d := testDoc()
 	message := &tg.Message{ID: 7, Media: &tg.MessageMediaDocument{Document: d}}

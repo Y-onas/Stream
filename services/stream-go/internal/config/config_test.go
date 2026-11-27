@@ -58,3 +58,35 @@ func TestMalformedDotenvDoesNotLeak(t *testing.T) {
 		t.Fatal("unsafe dotenv error")
 	}
 }
+
+func TestRuntimeRequiresOnlyCredentialsAndSource(t *testing.T) {
+	hash := strings.Repeat("b", 32)
+	for _, tc := range []struct{ id, hash, source, field string }{
+		{"", hash, "Channel", "TELEGRAM_API_ID"},
+		{"123", "", "Channel", "TELEGRAM_API_HASH"},
+		{"123", hash, "", "TELEGRAM_SOURCE"},
+		{"123", hash, "Channel\nsecret-input", "TELEGRAM_SOURCE"},
+	} {
+		_, err := ValidateRuntime(tc.id, tc.hash, tc.source)
+		if err == nil || !strings.Contains(err.Error(), tc.field) || strings.Contains(err.Error(), "secret-input") {
+			t.Fatalf("unsafe or missing field validation: %v", err)
+		}
+	}
+	cfg, err := ValidateRuntime("123", hash, "  የፊልም Channel  ")
+	if err != nil || cfg.Source != "የፊልም Channel" {
+		t.Fatal("source normalization failed")
+	}
+}
+
+func TestRuntimeIgnoresSupportUsername(t *testing.T) {
+	t.Setenv("TELEGRAM_API_ID", "123")
+	t.Setenv("TELEGRAM_API_HASH", strings.Repeat("b", 32))
+	t.Setenv("TELEGRAM_SOURCE", "Channel")
+	for _, support := range []string{"", "different_support_account", "not an account identity"} {
+		t.Setenv("USER_NAME", support)
+		cfg, err := LoadRuntime(filepath.Join(t.TempDir(), "absent.env"))
+		if err != nil || cfg.Source != "Channel" {
+			t.Fatalf("support contact affected Telegram configuration: %v", err)
+		}
+	}
+}

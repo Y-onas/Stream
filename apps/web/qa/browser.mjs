@@ -1,4 +1,4 @@
-import {cacheMessage} from '../src/services/api.mjs';
+import {api,cacheMessage} from '../src/services/api.mjs';
 const storagePath='/cache/storage.mjs',enginePath='/cache/engine.mjs';
 const {SegmentStore}=await import(/* @vite-ignore */ storagePath);
 const {RangeEngine,parseRange}=await import(/* @vite-ignore */ enginePath);
@@ -31,7 +31,9 @@ document.querySelector('#live').onclick=async()=>{
     check(worker.workerRevision===5,'Active service worker revision 5');
     log('Loading live catalogue…');
     const catalogue=await (await fetch('/api/videos')).json();const video=catalogue.items[0];if(!video)throw Error('No available video');
-    const url=`/api/videos/${video.id}/stream`;
+    await api('/auth/me');
+    const authorized=await api('/playback/authorize',{method:'POST',json:{videoId:video.id}});
+    const url=authorized.streamUrl;
     const get=async range=>{const res=await fetch(url,{headers:{Range:range}});const bytes=new Uint8Array(await res.arrayBuffer());return {res,bytes};};
     log('Reading first range…');
     const a=await get('bytes=0-1023');check(a.res.status===206&&a.bytes.length===1024,'Real Telegram through service worker: 206 and exactly 1,024 bytes');

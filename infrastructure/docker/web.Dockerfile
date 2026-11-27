@@ -7,7 +7,7 @@ COPY services/api/package.json services/api/package.json
 RUN npm ci
 COPY apps/web apps/web
 COPY apps/admin apps/admin
-RUN ADMIN_BASE=/admin/ npm run build
+RUN ADMIN_BASE=/hub-console/ npm run build
 FROM caddy:2-alpine
 COPY --from=build /src/apps/web/dist /srv/web
 COPY --from=build /src/apps/admin/dist /srv/admin

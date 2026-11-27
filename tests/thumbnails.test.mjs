@@ -9,6 +9,15 @@ const video={id:'channel-42-3',filename:'actual.mkv',sizeBytes:100,uploadedAt:'2
 const jpeg=Buffer.from([255,216,1,2,255,217]);
 const ready=async(check)=>{for(let n=0;n<100;n++){if(check())return;await new Promise(r=>setTimeout(r,10));}assert.fail('Thumbnail job did not finish');};
 
+test('metadata lease contention is retryable and is never cached as a missing thumbnail',async t=>{
+ let leases=0,extractions=0,released=0;
+ const service=createThumbnailService({streamOrigin:'http://unused',streamToken:'fixture',logger(){},jobLease:async()=>{if(++leases===1)throw Object.assign(Error('Busy'),{code:'BACKGROUND_BUSY'});return async()=>{released++;};},extract:async()=>{extractions++;return jpeg;}});
+ t.after(()=>service.close());
+ const first=service.get(video);await ready(()=>first.status==='busy');assert.equal(extractions,0);
+ const retry=service.get(video);assert.notEqual(retry,first);await ready(()=>retry.status==='ready'&&released===1);
+ assert.equal(leases,2);assert.equal(extractions,1);assert.equal(retry.bytes,jpeg);
+});
+
 test('range source permits only its private job URL and caps bytes and requests',async t=>{
   const abort=new AbortController(),reads=[];
   const source=await openRangeSource(video,{signal:abort.signal,maxBytes:8,maxRequests:2,chunkSize:4,readRange:async(start,end)=>{reads.push([start,end]);return Buffer.alloc(end-start+1,7);}});t.after(()=>{abort.abort();source.close();});
@@ -68,7 +77,7 @@ test('transient stream errors retry while cancellation stops further requests',a
 test('thumbnail API authenticates and validates catalogue identity before any extraction',async t=>{
   const calls=[];let state='pending',closed=false;
   const thumbnails={get(v,options){calls.push({v,options});return {status:state,bytes:jpeg};},close(){closed=true;}};
-  const handler=createAPI({streamOrigin:'http://private',streamToken:'s'.repeat(40),gatewayToken:'g'.repeat(40),thumbnails,fetcher:async()=>new Response(JSON.stringify({items:[video]}))});
+  const handler=createAPI({streamOrigin:'http://private',streamToken:'s'.repeat(40),gatewayToken:'g'.repeat(40),application:{close:async()=>{},handle:async()=>false,authorizeMedia:async(req,res,id)=>{if(id!==video.id)throw Object.assign(Error('Not found'),{status:404});return video;}},thumbnails,fetcher:async()=>new Response(JSON.stringify({items:[video]}))});
   const server=http.createServer(handler);server.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>{handler.close();server.closeAllConnections();server.close();assert.equal(closed,true);});
   const root=`http://127.0.0.1:${server.address().port}`,get=(path,options={})=>fetch(root+path,{...options,headers:{'x-gateway-token':'g'.repeat(40)}});
   assert.equal((await fetch(root+'/api/videos/channel-42-3/thumbnail')).status,401);

@@ -6,6 +6,7 @@
 *.session.*
 *.session.json
 *.session.json.*
+*.pem
 .session-*
 .tools/
 bin/
@@ -18,4 +19,5 @@ dist/
 .local/
 test-results/
 playwright-report/
+/class/
 *.tsbuildinfo

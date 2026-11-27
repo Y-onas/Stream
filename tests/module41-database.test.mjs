@@ -1,3 +1,4 @@
+import {scenarioClientFactory,testPlaybackConfig} from './helpers/playback-database.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -13,7 +14,9 @@ import {seedPlans} from '../services/api/prisma/seed.mjs';
 import {importCatalogue} from '../services/api/src/catalogue-sync.mjs';
 import {HttpError} from '../services/api/src/domain.mjs';
 
-test('Module 4.1 PostgreSQL workflow and statistics in an isolated disposable schema',{skip:process.env.RUN_DB_TESTS!=='1',timeout:300000},async t=>{
+// This end-to-end regression makes many sequential remote DB requests. Its
+// test deadline does not change the application's bounded query/HTTP deadlines.
+test('Module 4.1 PostgreSQL workflow and statistics in an isolated disposable schema',{skip:process.env.RUN_DB_TESTS!=='1',timeout:600000},async t=>{
   const schema=`hh_test_${randomBytes(8).toString('hex')}`;
   assert.match(schema,/^hh_test_[a-f0-9]{16}$/);
   const control=new pg.Client({connectionString:process.env.DATA_BASE_URL,connectionTimeoutMillis:10000});await control.connect();await control.query(`CREATE SCHEMA "${schema}"`);
@@ -23,24 +26,32 @@ test('Module 4.1 PostgreSQL workflow and statistics in an isolated disposable sc
   const libraryMigration=await readFile(new URL('../services/api/prisma/migrations/202611020002_account_library/migration.sql',import.meta.url),'utf8');await control.query(libraryMigration.replace('BEGIN;',`BEGIN; SET LOCAL search_path="${schema}";`));
   const watchedMigration=await readFile(new URL('../services/api/prisma/migrations/202611020003_account_watched/migration.sql',import.meta.url),'utf8');await control.query(watchedMigration.replace('BEGIN;',`BEGIN; SET LOCAL search_path="${schema}";`));
   const adminMigration=await readFile(new URL('../services/api/prisma/migrations/202611020004_admin_management/migration.sql',import.meta.url),'utf8');await control.query(adminMigration.replace('BEGIN;',`BEGIN; SET LOCAL search_path="${schema}";`));
+  const accessMigration=await readFile(new URL('../services/api/prisma/migrations/202611020005_playback_access/migration.sql',import.meta.url),'utf8');await control.query(accessMigration.replace('BEGIN;',`BEGIN; SET LOCAL search_path="${schema}";`));
+  const lifecycleMigration=await readFile(new URL('../services/api/prisma/migrations/202611020006_session_lifecycle/migration.sql',import.meta.url),'utf8');await control.query(lifecycleMigration.replace('BEGIN;',`BEGIN; SET LOCAL search_path="${schema}";`));
   db=createDatabase(process.env.DATA_BASE_URL,{schema});await seedPlans(db,'ETB');
   let clock=new Date('2026-11-02T09:00:00Z');
   const videos=[{id:'channel-99-1',title:'Test shorter video',filename:'shorter.mp4',sizeBytes:1000,mimeType:'video/mp4',uploadedAt:'2026-11-01T00:00:00Z',durationSeconds:900},{id:'channel-99-2',title:'Test longer video',filename:'longer.mkv',sizeBytes:2000,mimeType:'video/x-matroska',uploadedAt:'2026-11-02T00:00:00Z',durationSeconds:3000}];
   await importCatalogue(db,{items:videos,sync:{initialComplete:true}});await importCatalogue(db,{items:videos,sync:{initialComplete:true}});assert.equal(await db.video.count(),2);
+  await db.video.updateMany({data:{accessType:'FREE'}});
   const go=http.createServer((req,res)=>{if(req.url==='/internal/catalogue'){res.setHeader('Content-Type','application/json');return res.end(JSON.stringify({items:videos}));}if(req.url==='/readyz')return res.end('{}');res.writeHead(206,{'Content-Type':'video/mp4','Content-Range':'bytes 0-3/1000','Content-Length':'4'});res.end(Buffer.alloc(4));});go.listen(0,'127.0.0.1');await once(go,'listening');servers.push(go);
-  const config={currency:'ETB',supportUsername:'example_human',timezone:'Africa/Nairobi',adminOrigin:'http://admin.test',clerkPublishableKey:'',adminIds:[]};
+  const config={...testPlaybackConfig(),currency:'ETB',supportUsername:'example_human',timezone:'Africa/Nairobi',adminOrigin:'http://admin.test',clerkPublishableKey:'',adminIds:[]};
   const adminAuth=async req=>{if(req.headers.authorization!=='Bearer test-administrator')throw new HttpError(401,'Sign in as administrator.');return{id:'clerk-test-administrator'};};
   const app=createApplication({db,config,now:()=>new Date(clock),adminAuth});
   const handler=createAPI({streamOrigin:`http://127.0.0.1:${go.address().port}`,streamToken:'s'.repeat(40),gatewayToken:'g'.repeat(40),publicOrigin:'http://viewer.test',application:app,thumbnails:{get:()=>({status:'unavailable'}),close(){}}});
   const server=http.createServer(handler);server.listen(0,'127.0.0.1');await once(server,'listening');servers.push(server);const root=`http://127.0.0.1:${server.address().port}`;
-  function client(admin=false){const jar=new Map();let csrf='';return {async call(path,{method='GET',data,headers={}}={}){const response=await fetch(root+path,{method,headers:{'X-Gateway-Token':'g'.repeat(40),Origin:admin?config.adminOrigin:'http://viewer.test',...(admin?{Authorization:'Bearer test-administrator'}:{}),Cookie:[...jar].map(([k,v])=>`${k}=${v}`).join(';'),...(csrf?{'X-CSRF-Token':csrf}:{}),...(data?{'Content-Type':'application/json'}:{}),...headers},...(data?{body:JSON.stringify(data)}:{})});for(const c of response.headers.getSetCookie()){const [pair]=c.split(';'),index=pair.indexOf('=');jar.set(pair.slice(0,index),pair.slice(index+1));}let body;try{body=await response.json();}catch{}if(body?.csrfToken)csrf=body.csrfToken;return{status:response.status,body};}};}
+  const scenarioClient=await scenarioClientFactory(db,root);const client=admin=>scenarioClient(admin?'test-administrator':undefined);
   const visitor=client(),buyer=client(),racer=client(),admin=client(true);
   assert.equal((await visitor.call('/api/videos')).status,200);assert.equal((await visitor.call('/api/auth/me')).body.user,null);
   assert.equal((await visitor.call('/api/admin/overview')).status,403);
   assert.equal((await admin.call('/api/admin/overview',{headers:{Authorization:''}})).status,401);
   const plans=(await visitor.call('/api/plans')).body.items;assert.deepEqual(plans.map(p=>[p.name,p.priceMinor,p.currency]),[['Monthly',99000,'ETB'],['Yearly',299000,'ETB'],['Long-term',600000,'ETB']]);
   const credentials={username:'ModuleTestBuyer',password:'This is a strong test password'};
-  const registration=await Promise.all([buyer.call('/api/auth/register',{method:'POST',data:credentials}),racer.call('/api/auth/register',{method:'POST',data:{...credentials,username:'moduletestbuyer'}})]);assert.deepEqual(registration.map(r=>r.status).sort(),[201,409]);
+  const registration=await Promise.all([buyer.call('/api/auth/register',{method:'POST',data:credentials}),racer.call('/api/auth/register',{method:'POST',data:{...credentials,username:'moduletestbuyer'}})]);
+  // Password work has a one-job memory bound. A racing signup may receive a
+  // controlled busy response; once the first completes, retry must still
+  // enforce the database's case-insensitive username uniqueness.
+  for(let i=0;i<registration.length;i++)if(registration[i].status===503)registration[i]=await [buyer,racer][i].call('/api/auth/register',{method:'POST',data:credentials});
+  assert.deepEqual(registration.map(r=>r.status).sort(),[201,409]);
   assert.equal((await buyer.call('/api/auth/login',{method:'POST',data:{...credentials,username:'MODULETESTBUYER'}})).status,200);
   assert.equal((await buyer.call('/api/auth/login',{method:'POST',data:{...credentials,password:'An incorrect test password'}})).status,401);
   assert.equal((await visitor.call('/api/auth/username?username=moduletestbuyer')).body.available,false);

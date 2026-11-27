@@ -32,7 +32,7 @@ func main() {
 
 func run() error {
 	mode := flag.String("mode", "discover", "discover, list, inspect, find, or serve")
-	name := flag.String("source", "Stream Test", "exact source display name (case-insensitive)")
+	name := flag.String("source", "", "optional exact source display name override; defaults to TELEGRAM_SOURCE")
 	pageSize := flag.Int("page-size", 50, "messages per API request (1..100)")
 	max := flag.Int("max", 100, "maximum messages inspected")
 	offset := flag.Int("offset-id", 0, "inspect messages older than this ID; 0 starts at newest")
@@ -43,7 +43,7 @@ func run() error {
 	partTimeout := flag.Duration("part-timeout", 20*time.Second, "deadline per Telegram part, including retries")
 	requestTimeout := flag.Duration("request-timeout", 30*time.Minute, "maximum duration of an HTTP stream request")
 	verify := flag.Bool("verify-stream", false, "with serve: run bounded live HTTP/Telegram byte comparisons, then exit")
-	sessionPath := flag.String("session", ".sessions/telegram.session.json", "session file in a dedicated private directory")
+	sessionPath := flag.String("session", "", "private session file; defaults to TELEGRAM_SESSION_PATH or .sessions/telegram.session.json")
 	envPath := flag.String("env", ".env", "local dotenv file")
 	timeout := flag.Duration("timeout", 5*time.Minute, "discovery or server initialization timeout including login")
 	check := flag.Bool("check-config", false, "validate configuration without contacting Telegram")
@@ -54,7 +54,7 @@ func run() error {
 	if *mode != "discover" && *mode != "list" && *mode != "inspect" && *mode != "find" && *mode != "serve" {
 		return errors.New("mode must be discover, list, inspect, find, or serve")
 	}
-	if *pageSize < 1 || *pageSize > 100 || *max < 1 || *offset < 0 || int64(*offset) > 2147483647 || *timeout <= 0 || strings.TrimSpace(*name) == "" {
+	if *pageSize < 1 || *pageSize > 100 || *max < 1 || *offset < 0 || int64(*offset) > 2147483647 || *timeout <= 0 {
 		return errors.New("use page-size 1..100, positive max and timeout, nonnegative 32-bit offset-id, and a nonempty source name")
 	}
 	if (*mode == "inspect" || *mode == "serve") && (*id <= 0 || int64(*id) >= 2147483647) {
@@ -77,6 +77,22 @@ func run() error {
 	cfg, err := config.Load(*envPath)
 	if err != nil {
 		return err
+	}
+	if *name == "" {
+		*name = os.Getenv("TELEGRAM_SOURCE")
+	}
+	// The selected override is the source to validate, even if the environment
+	// default is absent or invalid. USER_NAME remains unrelated support config.
+	cfg, err = config.ValidateRuntime(strconv.Itoa(cfg.APIID), cfg.APIHash, *name)
+	if err != nil {
+		return err
+	}
+	*name = cfg.Source
+	if *sessionPath == "" {
+		*sessionPath = os.Getenv("TELEGRAM_SESSION_PATH")
+		if *sessionPath == "" {
+			*sessionPath = ".sessions/telegram.session.json"
+		}
 	}
 	if *check {
 		fmt.Println("Configuration valid. Telegram credentials are present; database configuration is not required. No network request made.")
@@ -110,10 +126,13 @@ func run() error {
 		if !status.Authorized {
 			return errors.New("Telegram authentication was not authorized")
 		}
+		if status.User == nil {
+			return errors.New("Telegram authentication did not return an account")
+		}
 		fmt.Println("Telegram authentication: successful")
 		matches, err := discovery.Find(setupCtx, client.API(), *name)
 		if errors.Is(err, discovery.ErrSourceMissing) {
-			return err
+			return fmt.Errorf("find source %q: %w", *name, err)
 		}
 		if err != nil {
 			return fmt.Errorf("find source: %s", login.Explain(err))

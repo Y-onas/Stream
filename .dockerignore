@@ -1,6 +1,12 @@
 .git
 .env
 .env.*
+**/.env
+**/.env.*
+**/*.pem
+**/*.session
+**/*.session.*
+**/.sessions
 .sessions
 .local
 .tools
@@ -12,3 +18,4 @@ bin
 test-results
 **/qa
 **/qa.html
+/class

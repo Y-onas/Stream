@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/gotd/td/telegram"
@@ -19,16 +20,31 @@ type getPart func(context.Context, int, *tg.UploadGetFileRequest) (tg.UploadFile
 
 type TelegramBackend struct {
 	selected    File
+	initial     *tg.Document
 	resolve     resolveDocument
 	get         getPart
 	pools       *dcPools
+	ownsPools   bool
 	partTimeout time.Duration
 }
 
 func NewTelegramBackend(ctx context.Context, client *telegram.Client, source discovery.Source, messageID, concurrency int, partTimeout time.Duration) (*TelegramBackend, error) {
-	if concurrency < 1 || concurrency > 8 || partTimeout <= 0 {
+	if client == nil || concurrency < 1 || concurrency > 8 || partTimeout <= 0 {
 		return nil, ErrMetadata
 	}
+	return newTelegramBackend(ctx, client, source, messageID, newDCPools(client, concurrency), true, partTimeout)
+}
+
+// Borrow transports belonging to this Telegram runtime, never another account.
+// Closing this backend must not close other viewers' connections.
+func NewTelegramBackendWithConnections(ctx context.Context, client *telegram.Client, source discovery.Source, messageID int, connections *FileConnections, partTimeout time.Duration) (*TelegramBackend, error) {
+	if client == nil || connections == nil || connections.client != client || partTimeout <= 0 {
+		return nil, ErrMetadata
+	}
+	return newTelegramBackend(ctx, client, source, messageID, connections.pools, false, partTimeout)
+}
+
+func newTelegramBackend(ctx context.Context, client *telegram.Client, source discovery.Source, messageID int, pools *dcPools, ownsPools bool, partTimeout time.Duration) (*TelegramBackend, error) {
 	resolve := func(ctx context.Context) (*tg.Document, error) {
 		message, err := discovery.Inspect(ctx, discovery.History(client.API(), source), messageID)
 		if errors.Is(err, discovery.ErrMessageMissing) {
@@ -43,8 +59,7 @@ func NewTelegramBackend(ctx context.Context, client *telegram.Client, source dis
 	if err != nil {
 		return nil, err
 	}
-	pools := newDCPools(client, concurrency)
-	backend := &TelegramBackend{selected: fileInfo(messageID, doc), resolve: resolve, pools: pools, partTimeout: partTimeout}
+	backend := &TelegramBackend{selected: fileInfo(messageID, doc), initial: doc, resolve: resolve, pools: pools, ownsPools: ownsPools, partTimeout: partTimeout}
 	backend.get = func(ctx context.Context, dc int, request *tg.UploadGetFileRequest) (tg.UploadFileClass, error) {
 		api, err := pools.get(ctx, dc)
 		if err != nil {
@@ -88,13 +103,57 @@ func (b *TelegramBackend) Open(ctx context.Context) (File, PartReader, error) {
 	if err != nil {
 		return File{}, nil, err
 	}
+	return b.openDocument(ctx, doc)
+}
+
+func (b *TelegramBackend) openDocument(ctx context.Context, doc *tg.Document) (File, PartReader, error) {
+	if err := ctx.Err(); err != nil {
+		return File{}, nil, err
+	}
+	if doc == nil {
+		return File{}, nil, ErrMetadata
+	}
 	if doc.ID != b.selected.DocumentID || doc.Size != b.selected.Size {
 		return File{}, nil, ErrChanged
 	}
-	return fileInfo(b.selected.MessageID, doc), &telegramReader{doc: doc, resolve: b.resolve, get: b.get, timeout: b.partTimeout}, nil
+	copy := *doc
+	copy.FileReference = append([]byte(nil), doc.FileReference...)
+	return fileInfo(b.selected.MessageID, &copy), &telegramReader{doc: &copy, resolve: b.resolve, get: b.get, timeout: b.partTimeout}, nil
 }
 
-func (b *TelegramBackend) Close() { b.pools.close() }
+// RequestProvider is for a backend freshly constructed for a single HTTP request.
+// The constructor just resolved this document; use it once instead of doing the
+// same Telegram lookup again before the first byte. Reuse always resolves anew.
+// The long-lived development CLI continues using Open for every request.
+func (b *TelegramBackend) RequestProvider() Provider {
+	return &initialDocumentProvider{backend: b, doc: b.initial}
+}
+
+type initialDocumentProvider struct {
+	mu      sync.Mutex
+	backend *TelegramBackend
+	doc     *tg.Document
+}
+
+func (p *initialDocumentProvider) Open(ctx context.Context) (File, PartReader, error) {
+	if err := ctx.Err(); err != nil {
+		return File{}, nil, err
+	}
+	p.mu.Lock()
+	doc := p.doc
+	p.doc = nil
+	p.mu.Unlock()
+	if doc != nil {
+		return p.backend.openDocument(ctx, doc)
+	}
+	return p.backend.Open(ctx)
+}
+
+func (b *TelegramBackend) Close() {
+	if b.ownsPools {
+		b.pools.close()
+	}
+}
 
 type telegramReader struct {
 	doc     *tg.Document

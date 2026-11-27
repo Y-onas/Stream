@@ -1,6 +1,15 @@
 :80 {
+  @adminPages path /hub-console /hub-console/*
+  header @adminPages X-Robots-Tag "noindex, nofollow, noarchive"
   respond /healthz 200
-  handle_path /admin/* {
+  @legacyAdmin path /admin /admin/*
+  handle @legacyAdmin {
+    respond "Not found." 404
+  }
+  redir /hub-console /hub-console/ 308
+  handle_path /hub-console/* {
+    header X-Robots-Tag "noindex, nofollow, noarchive"
+    header Cache-Control "no-store"
     root * /srv/admin
     try_files {path} /index.html
     file_server

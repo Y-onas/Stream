@@ -7,6 +7,7 @@ export function VideoCard({video,landscape=false,grid=false,rank,saved,onSave}){
   const cls=landscape?'landscape':grid?'poster-card grid-card':'poster-card';
   return <article className={`video-card ${cls}`} role={grid?'listitem':undefined}>
     <div className="card-image">
+      {video.accessType==='FREE'&&<span className="free-label">FREE</span>}
       <Link to={`/video/${video.id}`} className="art-link" aria-label={`Watch ${video.title}`}>
         <VideoThumbnail video={video} landscape={landscape}/>
         <div className="image-shade"/>

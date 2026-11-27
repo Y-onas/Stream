@@ -1,0 +1,19 @@
+# Optional, opt-in Hub quotas. Default Compose files apply no CPU/RAM quotas.
+# Supply all values explicitly; this never limits viewer/session counts.
+services:
+  api:
+    cpus: ${HUB_API_CPUS:?set an approved API CPU budget}
+    mem_limit: ${HUB_API_MEMORY:?set an approved API memory budget}
+    memswap_limit: ${HUB_API_MEMORY:?set an approved API memory budget}
+  stream-go:
+    cpus: ${HUB_GO_CPUS:?set an approved Go CPU budget}
+    mem_limit: ${HUB_GO_MEMORY:?set an approved Go memory budget}
+    memswap_limit: ${HUB_GO_MEMORY:?set an approved Go memory budget}
+  web:
+    cpus: ${HUB_WEB_CPUS:?set an approved web CPU budget}
+    mem_limit: ${HUB_WEB_MEMORY:?set an approved web memory budget}
+    memswap_limit: ${HUB_WEB_MEMORY:?set an approved web memory budget}
+  proxy:
+    cpus: ${HUB_PROXY_CPUS:?set an approved proxy CPU budget}
+    mem_limit: ${HUB_PROXY_MEMORY:?set an approved proxy memory budget}
+    memswap_limit: ${HUB_PROXY_MEMORY:?set an approved proxy memory budget}

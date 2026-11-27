@@ -4,8 +4,8 @@ export function settingsDefaults(config){return {id:'platform',platformName:'Hab
 export function publicSettings(s){return {platformName:s.platformName,currency:s.defaultCurrency,timezone:s.timezone,registrationOpen:s.registrationOpen,maintenanceMode:s.maintenanceMode,maintenanceMessage:s.maintenanceMessage,streamingAccess:s.streamingAccess,supportUsername:s.supportUsername?`@${s.supportUsername}`:null,supportUrl:s.supportUsername?`https://t.me/${s.supportUsername}`:null,supportDisplayName:s.supportDisplayName};}
 export function createSettings(db,config){let cache=null,until=0;return {invalidate(){cache=null;until=0;},async get(){if(cache&&Date.now()<until)return cache;cache=await db.platformSettings.findUnique({where:{id:'platform'}})||settingsDefaults(config);until=Date.now()+1000;return cache;}};}
 // Called by scripts/db-migrate.mjs after migrations and before API startup.
-// The production entrypoint (scripts/start-production.mjs) awaits that script;
-// local setup runs npm run db:migrate before npm run runtime:api.
+// Run this in the controlled migration step, never independently in replicas.
+// Local setup runs npm run db:migrate before npm run runtime:api.
 export async function bootstrapAdministration(db,config){
   const defaults=settingsDefaults(config);
   return db.$transaction(async tx=>{

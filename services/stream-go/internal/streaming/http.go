@@ -20,10 +20,16 @@ type HTTPOptions struct {
 	MessageID       int
 	Host            string
 	ChunkSize       int
-	Concurrency     int
-	RequestTimeout  time.Duration
-	WriteTimeout    time.Duration
-	Logger          *log.Logger
+	// SteadyChunkSize is optional. Large sequential ranges grow to this size
+	// after the small first part, without adding parallel reads or a media cache.
+	SteadyChunkSize   int
+	Concurrency       int
+	RequestTimeout    time.Duration
+	WriteTimeout      time.Duration
+	Logger            *log.Logger
+	MaxBytesPerSecond int
+	OnSourceError     func(error)
+	OnSourceReady     func()
 }
 
 type Handler struct {
@@ -52,6 +58,14 @@ func NewHandler(provider Provider, opts HTTPOptions) (*Handler, error) {
 	if err := ValidateChunk(opts.ChunkSize); err != nil {
 		return nil, err
 	}
+	if opts.SteadyChunkSize != 0 {
+		if err := ValidateChunk(opts.SteadyChunkSize); err != nil {
+			return nil, err
+		}
+		if opts.SteadyChunkSize < opts.ChunkSize {
+			return nil, errors.New("steady chunk size must not be smaller than the first part")
+		}
+	}
 	if provider == nil || opts.MessageID <= 0 || opts.Concurrency < 1 || opts.Concurrency > 8 || opts.RequestTimeout <= 0 || opts.WriteTimeout <= 0 {
 		return nil, errors.New("invalid streaming limits or selected message")
 	}
@@ -59,7 +73,7 @@ func NewHandler(provider Provider, opts HTTPOptions) (*Handler, error) {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
 	// Prevent DNS rebinding and cross-origin browser access to this local-only tool.
@@ -92,6 +106,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	file, reader, err := h.provider.Open(ctx)
 	if err != nil {
+		if ctx.Err() == nil && h.opts.OnSourceError != nil {
+			h.opts.OnSourceError(err)
+		}
 		upstreamError(w, err)
 		return
 	}
@@ -137,9 +154,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		part, err = ReadChunk(ctx, reader, file.Size, selected.Start, selected.End, h.opts.ChunkSize)
 		if err != nil {
+			if ctx.Err() == nil && h.opts.OnSourceError != nil {
+				h.opts.OnSourceError(err)
+			}
 			upstreamError(w, err)
 			return
 		}
+	}
+	if h.opts.OnSourceReady != nil {
+		h.opts.OnSourceReady()
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Length", strconv.FormatInt(selected.Length(), 10))
@@ -158,21 +181,48 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	position := selected.Start
+	paceStarted := time.Now()
+	var sent int64
 	for {
 		if ctx.Err() != nil {
 			h.abort("request canceled or timed out")
 			return
 		}
+		if err := controller.SetWriteDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			h.abort("write deadline failed")
+			return
+		}
+		// Telegram reads may be large, but client writes stay small so progress,
+		// backpressure, cancellation and per-write deadlines remain responsive.
+		writePart := part[:min(len(part), h.opts.ChunkSize, 64*1024)]
+		if h.opts.MaxBytesPerSecond > 0 {
+			// Pace this response only. Aggregate traffic grows with active media
+			// requests; this is not a global viewer or reservation limit.
+			due := paceStarted.Add(time.Duration(float64(sent+int64(len(writePart))) / float64(h.opts.MaxBytesPerSecond) * float64(time.Second)))
+			if wait := time.Until(due); wait > 0 {
+				timer := time.NewTimer(wait)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					h.abort("request canceled")
+					return
+				case <-timer.C:
+				}
+			}
+		}
+		// Intentional pacing is not a slow client write. Arm the socket deadline
+		// only when bytes are ready, and clear it before waiting for Telegram.
 		if err := controller.SetWriteDeadline(time.Now().Add(h.opts.WriteTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
 			h.abort("write deadline failed")
 			return
 		}
-		n, err := w.Write(part)
-		if err != nil || n != len(part) {
+		n, err := w.Write(writePart)
+		if err != nil || n != len(writePart) {
 			h.abort("client write failed")
 			return
 		}
 		position += int64(n)
+		sent += int64(n)
 		if position > selected.End {
 			return
 		}
@@ -180,9 +230,28 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.abort("client disconnected")
 			return
 		}
+		if err := controller.SetWriteDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			h.abort("write deadline failed")
+			return
+		}
+		part = part[n:]
+		if len(part) > 0 {
+			continue
+		}
 		part = nil
-		part, err = ReadChunk(ctx, reader, file.Size, position, selected.End, h.opts.ChunkSize)
+		// Keep startup and small seek/probe ranges small, then amortize Telegram
+		// round trips with larger parts. ReadChunk aligns within one 1 MiB window
+		// and slices off any prefix already sent. That bounded one-time overlap
+		// avoids many small RPCs before the next aligned window. Only one part is live.
+		chunkSize := h.opts.ChunkSize
+		if steady := h.opts.SteadyChunkSize; steady > chunkSize && selected.End-position+1 >= int64(steady) {
+			chunkSize = steady
+		}
+		part, err = ReadChunk(ctx, reader, file.Size, position, selected.End, chunkSize)
 		if err != nil {
+			if ctx.Err() == nil && h.opts.OnSourceError != nil {
+				h.opts.OnSourceError(err)
+			}
 			if ctx.Err() != nil {
 				h.abort("client canceled or request timed out")
 			} else {
