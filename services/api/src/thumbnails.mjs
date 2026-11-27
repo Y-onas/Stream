@@ -121,7 +121,13 @@ export function createThumbnailService({streamOrigin,streamToken,grantFor,jobLea
         }
         if(!bytes)throw Error('No suitable frame');
         entry.bytes=bytes;cacheBytes+=bytes.length;entry.status='ready';entry.expires=Date.now()+ttl;
-      }catch{entry.status='unavailable';entry.expires=Date.now()+5*60*1000;}
+      }catch(error){
+        if(error.code==='BACKGROUND_BUSY'){
+          // No media was read. Let a later GET retry rather than negative-cache
+          // another metadata worker's reservation as a missing video frame.
+          entry.status='busy';remove(thumbnailKey(entry.video));
+        }else{entry.status='unavailable';entry.expires=Date.now()+5*60*1000;}
+      }
       finally{clearTimeout(timeout);active.abort();source?.close();await release?.().catch(()=>{});logger({event:'thumbnail_complete',video:entry.video.id,status:entry.status,rangeBytes:source?.stats.bytes||0,rangeRequests:source?.stats.requests||0,...(entry.status==='unavailable'?{reason:source?.stats.failure||lastFailure||'no-frame'}:{})});active=undefined;prune();}
     }
     running=false;

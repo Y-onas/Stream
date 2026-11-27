@@ -21,15 +21,17 @@ export function createAPI({streamOrigin,streamToken,gatewayToken='',publicOrigin
   application?.operations?.setGoProbe(async()=>{const response=await fetcher(new URL('/internal/metrics',target),{headers:{Authorization:`Bearer ${streamToken}`},signal:AbortSignal.timeout(3000)});if(!response.ok)throw Error();return response.json();});
   const totals=application?.operations?.requests||{total:0,failed:0,authorizationFailures:0,interrupted:0};let nextDependencyLog=0;
   const logTimer=setInterval(()=>console.log(JSON.stringify({event:'api_request_totals',...totals})),60000);logTimer.unref();
-  let inFlight=0;
+  const publicWork={active:0},privateWork={active:0};
   const handler=async(req,res)=>{
-    // Bound short control/API work, not the number of open video responses.
-    // Long media bodies must never turn this into a global viewer ceiling.
-    const mediaRequest=['GET','HEAD'].includes(req.method)&&/^\/api\/playback\/[\w-]+\/stream(?:\?|$)/.test(req.url);
-    if(!mediaRequest){
-      if(inFlight>=32)return json(res,503,{message:'Application requests are temporarily busy. Please retry shortly.'});
-      inFlight++;let released=false;const release=()=>{if(!released){released=true;inFlight--;}};res.once('finish',release);res.once('close',release);
-    }
+    // Bound setup/control work, including media authorization and opening its
+    // upstream. A disconnected socket does not imply its DB work has stopped.
+    // Media releases its permit before body relay, never for the whole playback.
+    // Go's authenticated callbacks need independent bounded capacity: public
+    // startups wait for those checks and must not exhaust their own dependency.
+    const trustedCallback=/^\/internal\/playback\/(check|release|work|source)(?:\?|$)/.test(req.url)&&equal(String(req.headers.authorization||''),'Bearer '+streamToken);
+    const work=trustedCallback?privateWork:publicWork;
+    if(work.active>=32)return json(res,503,{message:'Application requests are temporarily busy. Please retry shortly.'});
+    work.active++;let released=false;const release=()=>{if(!released){released=true;work.active--;}};
     let finished=false;res.on('finish',()=>{finished=true;totals.total++;if(res.statusCode>=400)totals.failed++;if([401,403].includes(res.statusCode))totals.authorizationFailures++;});res.on('close',()=>{if(!finished){totals.total++;totals.failed++;totals.interrupted++;}});
     const controller=new AbortController();res.on('close',()=>controller.abort());
     const upstream=(path,options={})=>fetcher(new URL(path,target),{...options,headers:{Authorization:`Bearer ${streamToken}`,...options.headers},signal:AbortSignal.any([controller.signal,AbortSignal.timeout(options.timeout||10000)])});
@@ -51,7 +53,13 @@ export function createAPI({streamOrigin,streamToken,gatewayToken='',publicOrigin
       if(['/internal/playback/release','/internal/playback/work'].includes(url.pathname)){
         if(!equal(String(req.headers.authorization||''),'Bearer '+streamToken))throw new HttpError(401,'Unauthorized');
         if(req.method!=='POST'||!application)throw new HttpError(503,'Playback verification is unavailable.');
-        const data=await body(req);return json(res,200,await application.playback.capacity[url.pathname.endsWith('/work')?'discovery':'release'](data.reservationId));
+        const data=await body(req),acquiring=url.pathname.endsWith('/work');
+        if(acquiring&&controller.signal.aborted)return;
+        const result=await application.playback.capacity[acquiring?'discovery':'release'](data.reservationId);
+        // Acquisition can commit after Go loses/cancels the response, including
+        // after its first cleanup request. Remove that late reservation too.
+        if(acquiring&&controller.signal.aborted){await application.playback.capacity.release(data.reservationId);return;}
+        return json(res,200,result);
       }
       if(url.pathname==='/internal/playback/source'){
         if(!equal(String(req.headers.authorization||''),'Bearer '+streamToken))throw new HttpError(401,'Unauthorized');
@@ -87,8 +95,10 @@ export function createAPI({streamOrigin,streamToken,gatewayToken='',publicOrigin
       }
       if(!['GET','HEAD'].includes(req.method)||url.search||req.headers['transfer-encoding']||Number(req.headers['content-length']||0)>0)throw new HttpError(400,'Invalid stream request.');
       const authorization=await application.playback.stream(req,res,stream[1]);
+      if(controller.signal.aborted)return;
       const headers={'X-Playback-Grant':authorization.grant};for(const key of ['range','if-range','if-match'])if(req.headers[key])headers[key]=req.headers[key];
       const media=await upstream('/internal/videos/'+authorization.videoId+'/stream',{method:req.method,headers,timeout:4*3600000});
+      release(); // Authorization/setup finished; an open body is not a viewer cap.
       const output={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Cross-Origin-Resource-Policy':'same-origin'};
       for(const key of ['content-type','content-length','content-range','accept-ranges','etag','retry-after'])if(media.headers.has(key))output[key]=media.headers.get(key);
       res.writeHead(media.status,output);
@@ -101,7 +111,7 @@ export function createAPI({streamOrigin,streamToken,gatewayToken='',publicOrigin
       if(!error.status&&Date.now()>=nextDependencyLog){nextDependencyLog=Date.now()+10000;console.log(JSON.stringify({event:'api_dependency_error',code:/^P\d{4}$/.test(error.code||'')?error.code:'DEPENDENCY_ERROR'}));}
       if(!res.headersSent&&['P2034','P2002'].includes(error.code))return json(res,409,{message:'A conflicting update occurred. Refresh the record and try again.'});
       if(!res.headersSent)json(res,error.status||503,{message:error.status?error.message:'Application service is temporarily unavailable. Please retry shortly.',...(error.status&&error.code?{code:error.code}:{})});else res.destroy();
-    }
+    }finally{release();}
   };
   handler.close=async()=>{clearInterval(logTimer);thumbnails.close();await application?.close();};return handler;
 }

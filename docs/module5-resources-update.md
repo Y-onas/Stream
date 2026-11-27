@@ -16,6 +16,8 @@ Existing global viewer/upstream caps remain removed. The maximum of two simultan
 
 The generic streaming handler retains its optional pacing capability for older diagnostics/tests; production does not supply that option. Existing Range correctness/cancellation tests cover the unpaced default as well as the retained diagnostic option.
 
+`PLAYBACK_SESSION_UPSTREAM_LIMIT` is the operator ceiling for concurrent media requests within one playback session (1 or 2). The stored platform `sessionUpstreamLimit` may lower it; the effective value is the minimum of both, and Operations reports that effective value. A missing stored row uses the operator ceiling. This controls parallel Range requests within a session and does not cap global viewers. Pausing retains a VIP slot for up to ten minutes; close the video to free its slot immediately.
+
 ## Files
 
 - `compose.yaml`: Hub resource quota/weight and runtime memory/pacing environment entries removed. Ports, routing, volumes, health checks, logging, PID limits and shutdown settings are unchanged.

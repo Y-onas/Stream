@@ -33,6 +33,8 @@ test('Module 5: no global admission caps; account races, lease ownership and cle
  const data=(accessType='VIP')=>({requestKey:randomUUID(),videoId:video.id,viewerId:viewer.id,userId:user.id,accountSessionId:null,accessType,lastHeartbeatAt:clock,lastPosition:0,expiresAt:new Date(+clock+3600000)});
  const reserve=(capacity,input)=>(capacity===b?otherDB:db).$transaction(tx=>capacity.reserve(tx,input),{timeout:15000});
  const firstInput=data(),first=await reserve(a,firstInput);
+ const otherViewer=await db.viewerSession.create({data:{tokenHash:randomUUID(),expiresAt:new Date(+clock+3600000)}});
+ await assert.rejects(reserve(a,{...firstInput,viewerId:otherViewer.id}),error=>error.status===409&&error.code==='PLAYBACK_REQUEST_CONFLICT');
  await otherDB.platformSettings.findUnique({where:{id:'platform'}});
  // Race for the account's second VIP slot using two independent API clients.
  const vipRace=await Promise.allSettled([reserve(a,data()),reserve(b,data())]);
@@ -41,7 +43,7 @@ test('Module 5: no global admission caps; account races, lease ownership and cle
  const second=vipRace.find(r=>r.status==='fulfilled').value;
  assert.equal((await db.playbackSession.findUnique({where:{id:first.id}})).revokedAt,null);
  assert.equal((await reserve(b,firstInput)).id,first.id);
- await assert.rejects(reserve(a,data()),e=>e.status===429&&e.code==='VIP_STREAM_LIMIT');
+ await assert.rejects(reserve(a,data()),e=>e.status===429&&e.code==='VIP_STREAM_LIMIT'&&/Close one/.test(e.message)&&!/Pause/.test(e.message));
  const free=await reserve(b,data('FREE'));await reserve(a,data('FREE'));assert.equal(await db.playbackSession.count(),4);
  const otherUser=await db.user.create({data:{username:'OtherViewer',usernameCanonical:'otherviewer',passwordHash:user.passwordHash}});
  await reserve(b,{...data(),userId:otherUser.id});assert.equal(await db.playbackSession.count(),5);
@@ -68,4 +70,16 @@ test('Module 5: no global admission caps; account races, lease ownership and cle
  assert.equal(racing.filter(r=>r.status==='fulfilled').length,2);
  assert.equal(await db.playbackSession.count(),8);
  const legacy=await db.platformSettings.findUnique({where:{id:'platform'}});assert.equal(legacy.playbackLimit,1);assert.equal(legacy.upstreamLimit,1);
+ await t.test('operator ceiling and stored policy both bound per-session upstream requests',async()=>{
+  for(const [operator,stored]of [[1,2],[2,1],[2,2]]){
+   await db.platformSettings.update({where:{id:'platform'},data:{sessionUpstreamLimit:stored}});
+   const policy=createPlaybackCapacity({db,config:{sessionUpstreamLimit:operator},production:false,now:()=>clock}),ids=[randomUUID(),randomUUID(),randomUUID()];
+   try{
+    await policy.upstream({sid:first.id},ids[0],+clock+60000);
+    if(Math.min(operator,stored)===2)await policy.upstream({sid:first.id},ids[1],+clock+60000);
+    else await assert.rejects(policy.upstream({sid:first.id},ids[1],+clock+60000),error=>error.code==='SESSION_UPSTREAM_LIMIT');
+    await assert.rejects(policy.upstream({sid:first.id},ids[2],+clock+60000),error=>error.code==='SESSION_UPSTREAM_LIMIT');
+   }finally{for(const id of ids)await policy.release(id);}
+  }
+ });
 });

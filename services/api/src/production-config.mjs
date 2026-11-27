@@ -1,11 +1,15 @@
 import {createPlaybackGrants} from './playback-grants.mjs';
+import pg from 'pg';
 
 export class ConfigurationError extends Error{}
 export function validateProductionEnvironment(env,config){
  const required=name=>{if(typeof env[name]!=='string'||!env[name].trim())throw new ConfigurationError(`${name} is required in production.`);return env[name];};
  const database=required('DATA_BASE_URL');let dbURL;
  try{dbURL=new URL(database);if(!['postgres:','postgresql:'].includes(dbURL.protocol)||!dbURL.hostname||!dbURL.username||!dbURL.password||dbURL.pathname==='/')throw Error();}catch{throw new ConfigurationError('DATA_BASE_URL must be a PostgreSQL connection URL with credentials and a database name.');}
- if(!['localhost','127.0.0.1','postgres','database'].includes(dbURL.hostname)&&!['require','verify-ca','verify-full'].includes(dbURL.searchParams.get('sslmode'))&&dbURL.searchParams.get('ssl')!=='true')throw new ConfigurationError('DATA_BASE_URL must explicitly use provider-supported TLS for an external PostgreSQL server.');
+ // Resolve query host overrides and conflicting TLS options exactly as the
+ // installed driver does. Constructing a Client parses config; it never connects.
+ let connection;try{connection=new pg.Client({connectionString:database}).connectionParameters;}catch{throw new ConfigurationError('DATA_BASE_URL has invalid database connection or TLS options.');}
+ if(!['localhost','127.0.0.1','::1','postgres','database'].includes(connection.host)&&!(connection.ssl===true||(connection.ssl&&typeof connection.ssl==='object')))throw new ConfigurationError('DATA_BASE_URL must explicitly use provider-supported TLS for an external PostgreSQL server.');
  function origin(name,value){let url;try{url=new URL(value);if(url.protocol!=='https:'||url.username||url.password||url.origin!==value)throw Error();}catch{throw new ConfigurationError(`${name} must be an exact HTTPS origin without a path or credentials.`);}return url;}
  const publicOrigin=required('PUBLIC_ORIGIN');origin('PUBLIC_ORIGIN',publicOrigin);origin('ADMIN_ORIGIN',config.adminOrigin);
  const upstream=required('STREAM_ORIGIN');try{const url=new URL(upstream);if(!['http:','https:'].includes(url.protocol)||!url.hostname||url.username||url.password||url.search||url.hash||url.pathname!=='/')throw Error();}catch{throw new ConfigurationError('STREAM_ORIGIN must be a private HTTP(S) service origin without credentials or a path.');}

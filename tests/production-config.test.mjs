@@ -29,3 +29,24 @@ test('production preflight reports field names without echoing invalid values',a
   ['PLAYBACK_PRIVATE_KEY_PATH',f=>f.config.playbackPrivateKey='secret-input']
  ])await t.test(name,()=>{const f=fixture();edit(f);assert.throws(()=>validateProductionEnvironment(f.env,f.config),error=>error instanceof ConfigurationError&&error.message.includes(name)&&!error.message.includes('secret-input'));});
 });
+
+test('database TLS validation uses the driver effective host and TLS options',()=>{
+ for(const url of [
+  'postgresql://fixture:secret-input@localhost/hub?host=external.test&sslmode=disable',
+  'postgresql://fixture:secret-input@external.test/hub?ssl=true&sslmode=disable',
+  'postgresql://fixture:secret-input@external.test/hub?sslmode=disable&ssl=true',
+  'postgresql://fixture:secret-input@localhost/hub?host=localhost&host=external.test&sslmode=disable',
+  'postgresql://fixture:secret-input@external.test/hub?ssl=0'
+ ]){
+  const f=fixture();f.env.DATA_BASE_URL=url;
+  assert.throws(()=>validateProductionEnvironment(f.env,f.config),error=>error instanceof ConfigurationError&&error.message.includes('DATA_BASE_URL')&&!error.message.includes('secret-input'));
+ }
+ for(const url of [
+  'postgresql://fixture:fixture@external.test/hub?sslmode=require',
+  'postgresql://fixture:fixture@external.test/hub?ssl=true',
+  'postgresql://fixture:fixture@localhost/hub?host=external.test&sslmode=verify-full',
+  'postgresql://fixture:fixture@localhost/hub?sslmode=disable',
+  'postgresql://fixture:fixture@127.0.0.1/hub?sslmode=disable',
+  'postgresql://fixture:fixture@external.test/hub?host=localhost&sslmode=disable'
+ ]){const f=fixture();f.env.DATA_BASE_URL=url;assert.equal(validateProductionEnvironment(f.env,f.config).valid,true);}
+});

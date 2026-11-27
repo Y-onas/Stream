@@ -11,7 +11,7 @@ export function createSeekQueue({position,duration,apply,schedule=setTimeout,can
 }
 
 export function createVideoTransport({element,source,duration,onWaiting,onError,revalidate,fetcher=fetch,schedule=setTimeout,cancel=clearTimeout,now=Date.now}){
- let disposed=false,recovering=false,reloading=false,timer,probe,attempts=0,started=0,target=null,lastPosition=element.currentTime||0,lastDuration=element.duration,wasPlaying=!element.paused,restorePlaying=false,lastSeek=0;
+ let disposed=false,recovering=false,reloading=false,timer,probe,attempts=0,started=null,target=null,lastPosition=element.currentTime||0,lastDuration=element.duration,wasPlaying=!element.paused,restorePlaying=false,lastSeek=0;
  const queue=createSeekQueue({position:()=>target??(Number.isFinite(element.currentTime)?element.currentTime:lastPosition),duration:()=>Number.isFinite(element.duration)?element.duration:lastDuration||duration,apply:next=>{
   lastSeek=now();target=next;lastPosition=next;onWaiting(true);
   if(!recovering&&element.readyState>0)element.currentTime=next;
@@ -19,12 +19,13 @@ export function createVideoTransport({element,source,duration,onWaiting,onError,
  const fail=message=>{recovering=false;reloading=false;onWaiting(false);onError(message);};
  const retry=delay=>{
   if(disposed)return;
-  if(++attempts>6||now()-started>45000){fail('The connection could not recover. Check your connection and try again.');return;}
-  timer=schedule(()=>{if(disposed)return;recovering=false;reloading=true;element.src=source;element.load();},Math.max(delay,Math.min(4000,500*2**(attempts-1))));
+  const remaining=45000-(now()-started);
+  if(++attempts>6||remaining<=0){fail('The connection could not recover. Check your connection and try again.');return;}
+  timer=schedule(()=>{if(disposed)return;if(now()-started>=45000){fail('The connection could not recover. Check your connection and try again.');return;}recovering=false;reloading=true;element.src=source;element.load();},Math.min(remaining,Math.max(delay,Math.min(4000,500*2**(attempts-1)))));
  };
  async function error(){
   if(disposed||recovering)return;
-  recovering=true;if(!started)started=now();
+  recovering=true;if(started===null)started=now();
   const mediaCode=element.error?.code;
   target=queue.target()??target??(Number.isFinite(element.currentTime)&&element.currentTime>0?element.currentTime:lastPosition);
   restorePlaying=wasPlaying;onError('');onWaiting(true);
@@ -58,7 +59,7 @@ export function createVideoTransport({element,source,duration,onWaiting,onError,
  }
  const playing=()=>{wasPlaying=true;canPlay();},pause=()=>{if(!element.error&&!recovering&&!reloading)wasPlaying=false;};
  const seeked=()=>{if(!recovering){target=null;if(Number.isFinite(element.currentTime))lastPosition=element.currentTime;}};
- const time=()=>{if(Number.isFinite(element.currentTime)&&element.readyState>0){lastPosition=element.currentTime;if(!element.seeking&&!element.error&&element.readyState>=3&&now()-lastSeek>3000){attempts=0;started=0;lastSeek=0;}}};
+ const time=()=>{if(Number.isFinite(element.currentTime)&&element.readyState>0){lastPosition=element.currentTime;if(!element.seeking&&!element.error&&element.readyState>=3&&now()-lastSeek>3000){attempts=0;started=null;lastSeek=0;}}};
  // play fires when playback is requested, before the first frame is available.
  // Preserve that intent across an initial network failure, not just failures
  // after playing has fired. A real user pause still clears it above.
@@ -73,7 +74,7 @@ export function createVideoTransport({element,source,duration,onWaiting,onError,
    if(element.readyState>0)metadata();
    return element.play();
   },
-  retry(){attempts=0;started=0;void error();},
+  retry(){attempts=0;started=null;void error();},
   close(){disposed=true;cancel(timer);queue.clear();probe?.abort();element.removeEventListener('play',playIntent);element.removeEventListener('pause',pause);element.removeEventListener('timeupdate',time);}
  };
 }

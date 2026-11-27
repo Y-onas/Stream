@@ -11,7 +11,8 @@ import {spawn} from 'node:child_process';
 
 const chrome=process.env.CHROME_PATH||'C:/Program Files/Google/Chrome/Application/chrome.exe';
 test('real browser: silent VIP authorization, renewal, denial and navigation cleanup',{skip:process.env.RUN_BROWSER_TESTS!=='1'||!existsSync(chrome),timeout:90000},async t=>{
- const active=new Set(),events=[],userId=randomUUID();let delayNext=false,shortGrant=true,entitled=true,signedIn=true,accountFailure=false,denial=null,renewalDenial=null,accountRequests=0,renewals=0,mediaRequests=0;
+ const active=new Set(),events=[],userId=randomUUID();let delayNext=false,shortGrant=true,entitled=true,signedIn=true,accountFailure=false,denial=null,renewalDenial=null,accountRequests=0,renewals=0,mediaRequests=0,holdLibrary=false,heldLibrary=null;
+ t.after(()=>heldLibrary?.());
  const membership={id:randomUUID(),status:'ACTIVE',expiresAt:new Date(Date.now()+3600000).toISOString()};
  const videos=Array.from({length:3},(_,n)=>({id:randomUUID(),title:`Navigation fixture ${n}`,filename:'fixture.mp4',mimeType:'video/mp4',sizeBytes:1024,durationSeconds:120,uploadedAt:new Date().toISOString(),accessType:'VIP'}));
  const assets=path.resolve('apps/web/dist');
@@ -23,12 +24,12 @@ test('real browser: silent VIP authorization, renewal, denial and navigation cle
     const send=data=>res.end(JSON.stringify(data));
     if(url.pathname==='/api/auth/me'){accountRequests++;if(accountFailure){res.statusCode=503;return send({message:'Temporary fixture outage.'});}return send({user:signedIn?{id:userId,username:'FixtureViewer'}:null,membership:signedIn&&entitled?membership:null,csrfToken:'fixture'});}
     if(url.pathname==='/api/config')return send({platformName:'Navigation fixture',registrationOpen:true});
-    if(url.pathname==='/api/me/library')return send({userId,savedIds:[],likedIds:[],counts:{watched:0,liked:0,saved:0},membership:entitled?membership:null});
+    if(url.pathname==='/api/me/library'){const snapshot={userId,savedIds:[],likedIds:[],counts:{watched:0,liked:0,saved:0},membership:entitled?membership:null};if(holdLibrary){holdLibrary=false;heldLibrary=()=>{send(snapshot);heldLibrary=null;};return;}return send(snapshot);}
     if(url.pathname==='/api/videos')return send({items:videos,total:videos.length});
     if(url.pathname.endsWith('/trending'))return send({available:true,period:'day',items:[]});
     if(url.pathname==='/api/playback/authorize'){
      const bytes=[];for await(const chunk of req)bytes.push(chunk);const body=JSON.parse(Buffer.concat(bytes));
-     events.push({type:'authorize',video:body.videoId,priorActive:active.size});
+     events.push({type:'authorize',video:body.videoId,requestId:body.requestId,priorActive:active.size});
      const needsVip=videos.find(video=>video.id===body.videoId)?.accessType==='VIP';
      if(denial||(needsVip&&(!entitled||!signedIn))){res.statusCode=denial?.status||403;return send(denial||{code:'MEMBERSHIP_REQUIRED',message:'An active VIP membership is required.'});}
      if(active.size>=2){res.statusCode=429;return send({message:'Two VIP videos are already active.',code:'VIP_STREAM_LIMIT'});}
@@ -107,7 +108,16 @@ test('real browser: silent VIP authorization, renewal, denial and navigation cle
  assert.equal(await click(`a[href="/video/${videos[1].id}"]`),true);
  await wait(()=>evaluate('document.querySelector(".player-error")?.innerText.includes("This playback session was ended.")'));
  assert.equal(await evaluate('!!document.querySelector(".membership-gate")'),false);
- assert.equal(await click('a.back-link'),true);denial=null;entitled=false;
+ assert.equal(await click('a.back-link'),true);denial=null;
+ // Losing the initial viewer cookie must not strand this tab's request key.
+ denial={status:409,code:'PLAYBACK_REQUEST_CONFLICT',message:'Playback request belongs to another session. Please try again.'};
+ assert.equal(await click(`a[href="/video/${videos[0].id}"]`),true);
+ await wait(()=>evaluate('document.querySelector(".player-error")?.innerText.includes("Please try again.")'));
+ const conflicted=events.filter(event=>event.type==='authorize').at(-1).requestId;
+ denial=null;assert.equal(await click('.player-error .gold-button'),true);
+ await wait(()=>evaluate('!!document.querySelector("video")'));
+ assert.notEqual(events.filter(event=>event.type==='authorize').at(-1).requestId,conflicted);
+ assert.equal(await click('a.back-link'),true);await wait(()=>active.size===0);entitled=false;
  // A known non-member is gated immediately, without initializing a player.
  const beforeNonMemberRefresh=accountRequests;await evaluate('dispatchEvent(new Event("focus"))');await wait(()=>accountRequests>beforeNonMemberRefresh);
  await wait(()=>evaluate('!!document.querySelector(".vip-locked")'));
@@ -118,12 +128,18 @@ test('real browser: silent VIP authorization, renewal, denial and navigation cle
  assert.equal(await evaluate('!!document.querySelector("video")?.getAttribute("src")'),false);
  assert.equal(await evaluate('!!document.querySelector("video")'),false);
  await new Promise(resolve=>setTimeout(resolve,200));assert.equal(mediaRequests,beforeNonMember.media);assert.equal(events.filter(event=>event.type==='authorize').length,beforeNonMember.authorizations);
- // Approval is learned by existing account/library refresh, without a prompt.
- await evaluate('dispatchEvent(new Event("focus"))');await wait(()=>accountRequests>=initialAccountRequests+3);
- await new Promise(resolve=>setTimeout(resolve,100));entitled=true;
+ // Hold an old non-member library snapshot across approval. It must never
+ // overwrite the active membership or terminate the new valid playback.
+ holdLibrary=true;await evaluate('dispatchEvent(new Event("focus"))');await wait(()=>heldLibrary!==null);
+ entitled=true;
  await evaluate('dispatchEvent(new Event("focus"))');
  await wait(()=>evaluate('!!document.querySelector("video")'));
  assert.equal(await evaluate('!!document.querySelector(".membership-gate")'),false);
+ await evaluate('window.fixturePlayer=document.querySelector("video");true');
+ const beforeStale=events.filter(event=>event.type==='terminate').length;
+ heldLibrary();await new Promise(resolve=>setTimeout(resolve,200));
+ assert.equal(await evaluate('document.querySelector("video")===window.fixturePlayer&&!document.querySelector(".membership-gate")'),true,'stale membership removed active playback');
+ assert.equal(events.filter(event=>event.type==='terminate').length,beforeStale);
  // A real revocation stops the player and presents a single membership option.
  entitled=false;renewalDenial={status:410,code:'PLAYBACK_SESSION_EXPIRED',message:'Playback session expired. Start playback again.'};
  await evaluate('dispatchEvent(new Event("focus"))');

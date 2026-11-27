@@ -3,7 +3,7 @@ import {Icon} from './Icons';
 import {useAccount} from '../hooks/useAccount';
 
 export function VideoThumbnail({video,landscape=false}){
-  const account=useAccount(),membership=account.library?account.library.membership:account.membership,locked=video.accessType==='VIP'&&(!account.user||!membership||Date.parse(membership.expiresAt)<=Date.now());
+  const account=useAccount(),membership=account.membership,locked=video.accessType==='VIP'&&(!account.user||!membership||Date.parse(membership.expiresAt)<=Date.now());
   const container=useRef(null),[image,setImage]=useState(null);
   useEffect(()=>{
       setImage(null);

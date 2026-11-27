@@ -42,12 +42,12 @@ export function createPlaybackCapacity({db,config,production,now}){
    ) SELECT inserted.*,totals.vip AS "capacityVip" FROM totals LEFT JOIN inserted ON true`;
   if(created.id)return created;
   if(data.requestKey){const prior=await tx.playbackSession.findUnique({where:{requestKey:data.requestKey}});if(prior){
-   if(prior.videoId!==data.videoId||prior.viewerId!==data.viewerId||prior.accountSessionId!==data.accountSessionId)throw new HttpError(409,'Playback request belongs to another session.');
+   if(prior.videoId!==data.videoId||prior.viewerId!==data.viewerId||prior.accountSessionId!==data.accountSessionId)throw new HttpError(409,'Playback request belongs to another session. Please try again.','PLAYBACK_REQUEST_CONFLICT');
    if(prior.accessType!==data.accessType)throw new HttpError(409,'Playback access changed. Start a new session.','PLAYBACK_ACCESS_CHANGED');
    if(prior.revokedAt||['EXPIRED','TERMINATED'].includes(prior.state)||!prior.reservedUntil||prior.reservedUntil<=at||prior.expiresAt<=at)throw new HttpError(410,'Start a new playback session.','PLAYBACK_SESSION_EXPIRED');
    return prior;
   }}
-  if(data.accessType==='VIP'&&Number(created.capacityVip)>=2)throw new HttpError(429,'Two VIP videos are already active on your account. Pause or close one before starting another.','VIP_STREAM_LIMIT');
+  if(data.accessType==='VIP'&&Number(created.capacityVip)>=2)throw new HttpError(429,'Two VIP videos are already active on your account. Close one before starting another.','VIP_STREAM_LIMIT');
   throw new HttpError(409,'Playback request could not be created. Please retry.');
  }
  async function upstream(claims,id,deadline,active=false){
@@ -55,7 +55,8 @@ export function createPlaybackCapacity({db,config,production,now}){
   return db.$transaction(async tx=>{
    const contextId=claims.sid||claims.vid,at=await clock(tx,`upstream:${contextId}`);
    if(active){const changed=await tx.upstreamLease.updateMany({where:{id,contextId,expiresAt:{gt:at}},data:{expiresAt:new Date(deadline)}});if(!changed.count)throw new HttpError(403,'Upstream reservation is no longer active.');return {renewed:true};}
-   const result=await tx.$queryRaw`WITH cfg AS (SELECT COALESCE((SELECT "sessionUpstreamLimit" FROM ${table('hh_platform_settings')} WHERE id='platform'),${sessionLimit}) AS maximum),
+   // Environment is the operator ceiling; stored policy may only lower it.
+   const result=await tx.$queryRaw`WITH cfg AS (SELECT LEAST(COALESCE((SELECT "sessionUpstreamLimit" FROM ${table('hh_platform_settings')} WHERE id='platform'),${sessionLimit}),${sessionLimit}) AS maximum),
      prior AS (SELECT "contextId","expiresAt" FROM ${table('hh_upstream_leases')} WHERE id=${id}::uuid),
      totals AS (SELECT count(*) AS own FROM ${table('hh_upstream_leases')} WHERE "contextId"=${contextId} AND "expiresAt">${at})
      INSERT INTO ${table('hh_upstream_leases')}(id,"contextId","playbackSessionId","expiresAt")

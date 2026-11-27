@@ -86,6 +86,27 @@ func TestRatePacingAndCancellation(t *testing.T) {
 	}
 }
 
+func TestPacingWaitDoesNotConsumeResponseWriteDeadline(t *testing.T) {
+	var calls atomic.Int32
+	data := make([]byte, 8192)
+	h, err := NewHandler(fakeProvider(data, &calls), HTTPOptions{TrustedInternal: true, MessageID: 7, ChunkSize: 4096, Concurrency: 1, RequestTimeout: 3 * time.Second, WriteTimeout: 50 * time.Millisecond, MaxBytesPerSecond: 16384})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(h)
+	defer server.Close()
+	client := &http.Client{Timeout: 3 * time.Second}
+	response, err := client.Get(server.URL + "/media/stream/7")
+	if err != nil {
+		t.Fatal("pacing expired the response deadline", err)
+	}
+	defer response.Body.Close()
+	bytes, err := io.ReadAll(response.Body)
+	if err != nil || len(bytes) != len(data) {
+		t.Fatal("pacing truncated the stream", len(bytes), err)
+	}
+}
+
 func TestHTTPExactBytesAndHeaders(t *testing.T) {
 	data := fixture()
 	var calls atomic.Int32

@@ -6,6 +6,10 @@ import {bootstrapAdministration} from '../services/api/src/settings.mjs';
 import {seedPlans} from '../services/api/prisma/seed.mjs';
 import {applicationConfig} from '../services/api/src/config.mjs';
 if(!process.env.DATA_BASE_URL)throw Error('DATA_BASE_URL is required');
+// Historical migrations (including 202611020006) intentionally run offline:
+// stop Hub API/Go writers and drain Hub traffic first. Their table locks and
+// backfills last until COMMIT; never rewrite already-applied migration hashes.
+// The operator must rehearse timing on a production-sized clone before upgrades.
 const child=spawn(process.execPath,['node_modules/prisma/build/index.js','migrate','deploy','--config','services/api/prisma.config.ts'],{stdio:['ignore','pipe','pipe'],windowsHide:true});
 // Bound captured diagnostics and redact URLs/known secrets before saving. The
 // migration CLI must never stream a datasource or credentials to service logs.

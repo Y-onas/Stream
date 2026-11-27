@@ -27,7 +27,7 @@ export function usePlayback(video,player,enabled=true){
   setState({loading:true});
   const stop=error=>{
    if(closed)return;clearTimeout(timer);
-   if(error.status===401||error.status===410||['PLAYBACK_SESSION_EXPIRED','PLAYBACK_SESSION_REVOKED','PLAYBACK_ACCESS_CHANGED','MEMBERSHIP_REQUIRED','ACCESS_EXPIRED'].includes(error.code)){identity={requestId:crypto.randomUUID()};saveIdentity();}
+   if(error.status===401||error.status===410||['PLAYBACK_SESSION_EXPIRED','PLAYBACK_SESSION_REVOKED','PLAYBACK_ACCESS_CHANGED','PLAYBACK_REQUEST_CONFLICT','MEMBERSHIP_REQUIRED','ACCESS_EXPIRED'].includes(error.code)){identity={requestId:crypto.randomUUID()};saveIdentity();}
    const el=player.current;if(el){el.pause();el.removeAttribute('src');el.load();}
    setState({loading:false,error:error.message,membershipRequired:video.accessType==='VIP'&&['MEMBERSHIP_REQUIRED','MEMBERSHIP_EXPIRED'].includes(error.code),code:error.code});
    if(video.accessType==='VIP'&&['MEMBERSHIP_REQUIRED','MEMBERSHIP_EXPIRED','PLAYBACK_SESSION_REVOKED','PLAYBACK_SESSION_EXPIRED','ACCESS_EXPIRED'].includes(error.code)){

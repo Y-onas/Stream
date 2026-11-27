@@ -1,0 +1,50 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {existsSync} from 'node:fs';
+import {mkdir,mkdtemp,readFile,writeFile,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {spawn} from 'node:child_process';
+import {once} from 'node:events';
+import http from 'node:http';
+import {build} from 'vite';
+import react from '@vitejs/plugin-react';
+
+const chrome=process.env.CHROME_PATH||'C:/Program Files/Google/Chrome/Application/chrome.exe';
+test('real Operations page clears failed loading and Refresh/polling update its metrics',{skip:process.env.RUN_BROWSER_TESTS!=='1'||!existsSync(chrome),timeout:90000},async t=>{
+ const root=path.resolve('.'),qa=path.join(root,'.local/qa');await mkdir(qa,{recursive:true});const fixture=await mkdtemp(path.join(qa,'operations-browser-'));
+ t.after(async()=>{assert.ok(path.resolve(fixture).startsWith(qa+path.sep));await rm(fixture,{recursive:true,force:true});});
+ const entry=path.join(fixture,'entry.jsx');await writeFile(entry,`
+ import React,{useState} from 'react';import {createRoot} from 'react-dom/client';
+ import {AdminContext} from '../../../apps/admin/src/AdminUI.jsx';
+ import {Operations} from '../../../apps/admin/src/Operations.jsx';
+ import DashboardFrame from '../../../apps/admin/src/design/DashboardFrame.jsx';
+ const interval=window.setInterval;window.setInterval=(fn,ms)=>{if(ms===30000)window.fixturePoll=fn;return interval(fn,ms);};
+ let count=0;window.fixtureCalls=0;
+ function Harness(){const[revision,setRevision]=useState(0);
+ const request=async()=>{window.fixtureCalls=++count;if(count===1)throw Error('Fixture metrics request failed');return {sampledAt:new Date().toISOString(),warnings:[],sessions:count,upstreams:0,metadataWorkers:0,databaseConnections:1,policy:{sessionUpstreamLimit:1},api:{rss:0},requests:{failed:0,total:count,authorizationFailures:0,interrupted:0},go:null,disk:null};};
+ return <AdminContext.Provider value={{request,revision}}><DashboardFrame admin={{role:'OWNER',mfaEnabled:true,name:'Fixture',email:'fixture@example.test'}} routes={[['/operations','Operations']]} base='/hub-console' path='/operations' title='Operations' onNavigate={()=>{}} onRefresh={()=>setRevision(v=>v+1)}><Operations/></DashboardFrame></AdminContext.Provider>;}
+ createRoot(document.getElementById('root')).render(<Harness/>);
+ `);
+ const bundle=await build({root,configFile:false,plugins:[react()],define:{'process.env.NODE_ENV':'"production"'},logLevel:'silent',build:{lib:{entry,name:'OperationsFixture',formats:['iife']},write:false,minify:false}});
+ const code=(Array.isArray(bundle)?bundle:[bundle]).flatMap(result=>result.output).find(item=>item.type==='chunk').code;
+ const server=http.createServer((req,res)=>{res.setHeader('Content-Type',req.url==='/fixture.js'?'text/javascript':'text/html');res.end(req.url==='/fixture.js'?code:'<div id="root"></div><script src="/fixture.js"></script>');});
+ server.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>{server.closeAllConnections();server.close();});
+ const profile=await mkdtemp(path.join(tmpdir(),'hh-operations-')),child=spawn(chrome,['--headless=new','--disable-gpu','--no-first-run','--no-default-browser-check','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank'],{windowsHide:true,stdio:'ignore'});
+ t.after(async()=>{child.kill();await new Promise(resolve=>setTimeout(resolve,500));assert.ok(path.resolve(profile).startsWith(path.resolve(tmpdir())+path.sep));await rm(profile,{recursive:true,force:true,maxRetries:10,retryDelay:100});});
+ const wait=async check=>{for(let n=0;n<200;n++){if(await check())return;await new Promise(resolve=>setTimeout(resolve,100));}assert.fail('Operations browser condition timed out');};
+ let port;await wait(async()=>{try{port=Number((await readFile(path.join(profile,'DevToolsActivePort'),'utf8')).split('\n')[0]);return port>0;}catch{return false;}});
+ const pages=await(await fetch(`http://127.0.0.1:${port}/json/list`)).json(),socket=new WebSocket(pages.find(page=>page.type==='page').webSocketDebuggerUrl);await once(socket,'open');t.after(()=>socket.close());let id=0;const pending=new Map();
+ socket.addEventListener('message',event=>{const message=JSON.parse(event.data);if(message.id){const task=pending.get(message.id);pending.delete(message.id);message.error?task.reject(Error(message.error.message)):task.resolve(message.result);}});
+ const cdp=(method,params={})=>new Promise((resolve,reject)=>{const next=++id;pending.set(next,{resolve,reject});socket.send(JSON.stringify({id:next,method,params}));});
+ const evaluate=async expression=>{const result=await cdp('Runtime.evaluate',{expression,returnByValue:true});assert.equal(result.exceptionDetails,undefined);return result.result.value;};
+ await cdp('Page.enable');await cdp('Page.navigate',{url:`http://127.0.0.1:${server.address().port}/`});
+ await wait(()=>evaluate('document.body.innerText.includes("Fixture metrics request failed")'));
+ assert.equal(await evaluate('document.body.innerText.includes("Loading operational metrics")'),false);
+ assert.equal(await evaluate('window.fixtureCalls'),1);
+ await evaluate(`document.querySelector('[aria-label="Refresh current records"]').click()`);
+ await wait(()=>evaluate('window.fixtureCalls===2&&document.body.innerText.includes("Updated")'));
+ const sessions='[...document.querySelectorAll("dt")].find(el=>el.textContent==="Active playback sessions")?.nextElementSibling.textContent';
+ assert.equal(await evaluate(sessions),'2');assert.equal(await evaluate('document.body.innerText.includes("Fixture metrics request failed")'),false);
+ await evaluate('window.fixturePoll()');await wait(()=>evaluate('window.fixtureCalls===3'));assert.equal(await evaluate(sessions),'3');
+});

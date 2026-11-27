@@ -139,11 +139,13 @@ func (v *Verifier) Discovery(parent context.Context) (context.Context, func(), e
 	res, err := v.Client.Do(req)
 	if err != nil {
 		cancel()
+		v.release(id)
 		return nil, nil, Denied{503}
 	}
 	res.Body.Close()
 	if res.StatusCode != 200 {
 		cancel()
+		v.release(id)
 		return nil, nil, Denied{503}
 	}
 	return ctx, func() { cancel(); v.release(id) }, nil

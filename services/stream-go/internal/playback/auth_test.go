@@ -42,6 +42,113 @@ func TestSeekWaitsForPreviousReservationAndRechecksAccess(t *testing.T) {
 	}
 }
 
+type deadlineBarrier struct {
+	*httptest.ResponseRecorder
+	entered chan struct{}
+	resume  chan struct{}
+}
+
+func (w *deadlineBarrier) SetWriteDeadline(time.Time) error {
+	close(w.entered)
+	<-w.resume
+	return nil
+}
+
+func TestStopWaitsForResponseDeadlineWatcher(t *testing.T) {
+	v, key := testVerifier(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			_ = json.NewEncoder(w).Encode(lease{Key: "channel-1-7", VideoID: testVideo, Until: time.Now().Add(time.Minute).UnixMilli()})
+		}
+	})
+	w := &deadlineBarrier{ResponseRecorder: httptest.NewRecorder(), entered: make(chan struct{}), resume: make(chan struct{})}
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	unblock := func() {
+		select {
+		case <-w.resume:
+		default:
+			close(w.resume)
+		}
+	}
+	defer unblock()
+	_, stop, _, err := v.Open(parent, w, signed(t, key, nil), testVideo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(stop)
+	cancel()
+	select {
+	case <-w.entered:
+	case <-time.After(time.Second):
+		t.Fatal("watcher did not reach the writer")
+	}
+	stopped := make(chan struct{})
+	go func() { stop(); close(stopped) }()
+	select {
+	case <-stopped:
+		t.Fatal("stop returned while the watcher still used ResponseController")
+	case <-time.After(100 * time.Millisecond):
+	}
+	unblock()
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("stop did not finish after the watcher exited")
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestDiscoveryAcquisitionFailureReleasesItsGeneratedReservation(t *testing.T) {
+	for _, lostResponse := range []bool{false, true} {
+		t.Run(fmt.Sprint(lostResponse), func(t *testing.T) {
+			acquired, released := make(chan string, 1), make(chan string, 1)
+			v, _ := testVerifier(t, func(w http.ResponseWriter, r *http.Request) {
+				var data struct {
+					ID string `json:"reservationId"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&data)
+				if r.URL.Path == "/work" {
+					acquired <- data.ID
+					if !lostResponse {
+						w.WriteHeader(503)
+					}
+				} else if r.URL.Path == "/release" {
+					released <- data.ID
+				}
+			})
+			v.Client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				res, err := http.DefaultTransport.RoundTrip(r)
+				if err == nil && lostResponse && r.URL.Path == "/work" {
+					res.Body.Close()
+					return nil, errors.New("response lost after reservation commit")
+				}
+				return res, err
+			})
+			_, cleanup, err := v.Discovery(context.Background())
+			if err == nil || cleanup != nil {
+				t.Fatal("failed acquisition was accepted")
+			}
+			var id string
+			select {
+			case id = <-acquired:
+			case <-time.After(time.Second):
+				t.Fatal("work was not requested")
+			}
+			select {
+			case actual := <-released:
+				if actual != id {
+					t.Fatal("wrong reservation released")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("failed acquisition leaked its reservation")
+			}
+		})
+	}
+}
+
 func TestPendingSeekCancellationAndDenialDoNotStartStreams(t *testing.T) {
 	for _, revoked := range []bool{false, true} {
 		t.Run(fmt.Sprint(revoked), func(t *testing.T) {

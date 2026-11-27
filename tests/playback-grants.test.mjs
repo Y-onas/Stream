@@ -43,3 +43,14 @@ test('clock tolerance permits small future iat but never permits expired grants'
  const past=createPlaybackGrants(config,()=>new Date(+at-60000)),expired=await past.sign(claims(),new Date(+at-1000));
  await assert.rejects(service.verify(expired),e=>e.status===401);
 });
+
+test('PKCS#1 current keys and previous public keys work after startup validation',async()=>{
+ const pkcs1={...config,playbackKeyId:'legacy',playbackPrivateKey:pair.privateKey.export({type:'pkcs1',format:'pem'}),playbackPublicKey:pair.publicKey.export({type:'pkcs1',format:'pem'})};
+ const old=createPlaybackGrants(pkcs1,()=>at),token=await old.sign(claims(),new Date(+at+300000));
+ assert.equal((await old.verify(token)).mode,'VIP');
+ const next=generateKeyPairSync('rsa',{modulusLength:2048});
+ const rotated=createPlaybackGrants({...config,playbackKeyId:'current',playbackPrivateKey:next.privateKey.export({type:'pkcs1',format:'pem'}),playbackPublicKey:next.publicKey.export({type:'spki',format:'pem'}),playbackPreviousKeys:[{kid:'legacy',publicKey:pkcs1.playbackPublicKey,acceptUntil:new Date(+at+60000).toISOString()}]},()=>at);
+ assert.equal((await rotated.verify(token)).mode,'VIP');
+ assert.equal((await rotated.verify(await rotated.sign(claims(),new Date(+at+300000)))).mode,'VIP');
+ assert.throws(()=>createPlaybackGrants({...config,playbackPreviousKeys:[{kid:'broken',publicKey:'invalid PEM',acceptUntil:new Date(+at+60000).toISOString()}]},()=>at));
+});

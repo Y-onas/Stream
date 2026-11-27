@@ -10,10 +10,27 @@ import (
 	"time"
 )
 
-var sample struct {
+type cpuSample struct {
 	sync.Mutex
 	at  time.Time
 	cpu uint64
+}
+
+var sample cpuSample
+
+func (s *cpuSample) observe(used uint64, at time.Time) (float64, bool) {
+	s.Lock()
+	defer s.Unlock()
+	if s.at.IsZero() {
+		s.at, s.cpu = at, used
+		return 0, false
+	}
+	if used < s.cpu || !at.After(s.at) {
+		return 0, false // A stale observation must not move the baseline back.
+	}
+	cores := float64(used-s.cpu) / 1e6 / at.Sub(s.at).Seconds()
+	s.at, s.cpu = at, used
+	return cores, true
 }
 
 func Snapshot() map[string]any {
@@ -36,12 +53,9 @@ func Snapshot() map[string]any {
 			}
 			if used, err := strconv.ParseUint(fields[1], 10, 64); err == nil {
 				now := time.Now()
-				sample.Lock()
-				if !sample.at.IsZero() && used >= sample.cpu && now.After(sample.at) {
-					result["cpuCoresUsed"] = float64(used-sample.cpu) / 1e6 / now.Sub(sample.at).Seconds()
+				if cores, ok := sample.observe(used, now); ok {
+					result["cpuCoresUsed"] = cores
 				}
-				sample.at, sample.cpu = now, used
-				sample.Unlock()
 			}
 		}
 	}

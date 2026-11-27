@@ -66,3 +66,19 @@ test('a renewed authorization resumes; genuine codec failures and persistent out
 test('navigation cancels a pending recovery and never resurrects the old player',async()=>{
  let complete;const f=fixture(()=>new Promise(resolve=>{complete=resolve;}));const pending=f.transport.error();f.transport.close();complete(new Response(null,{status:503}));await pending;assert.equal(f.time.size(),0);assert.equal(f.element.src,'');
 });
+
+test('Retry-After cannot extend recovery beyond the deadline or reload after it',async()=>{
+ for(const after of ['3600','Fri, 27 Nov 2026 13:00:00 GMT']){
+  let clock=Date.parse('2026-11-27T12:00:00Z');
+  const f=fixture(async()=>new Response(null,{status:503,headers:{'Retry-After':after}}),{now:()=>clock});
+  await f.transport.error();const before=f.element.loads;clock+=45000;
+  assert.equal(f.time.run(),45000);assert.equal(f.element.loads,before);assert.equal(f.element.src,'');
+  assert.equal(f.waiting.at(-1),false);assert.match(f.errors.at(-1),/could not recover/);f.transport.close();
+ }
+});
+
+test('a retry delay within the remaining budget reloads, including a clock starting at zero',async()=>{
+ let clock=0;const f=fixture(async()=>new Response(null,{status:503,headers:{'Retry-After':'2'}}),{now:()=>clock});
+ await f.transport.error();clock=2000;assert.equal(f.time.run(),2000);assert.equal(f.element.src,'/authorized');
+ clock=44900;await f.transport.error();clock=45000;assert.equal(f.time.run(),100);assert.match(f.errors.at(-1),/could not recover/);f.transport.close();
+});

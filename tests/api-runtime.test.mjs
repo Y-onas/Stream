@@ -16,6 +16,22 @@ test('a canceled opening check releases a lease committed late; canceled renewal
 });
 const streamToken='s'.repeat(40),gatewayToken='g'.repeat(40),videoId='01234567-1234-4234-8234-012345678901',sessionId='01234567-1234-4234-8234-012345678902';
 
+test('a canceled discovery acquisition releases a reservation that commits after the first cleanup',async()=>{
+ let entered,commit,disconnected;const started=new Promise(resolve=>{entered=resolve;}),pending=new Promise(resolve=>{commit=resolve;}),closed=new Promise(resolve=>{disconnected=resolve;});
+ let leased=false;const releases=[];
+ const capacity={discovery:async()=>{entered();await pending;leased=true;return {leaseUntil:Date.now()+30000};},release:async id=>{releases.push(id);leased=false;return {released:true};}};
+ const handler=createAPI({streamOrigin:'http://unused.test',streamToken,gatewayToken,application:{close(){},playback:{capacity}},thumbnails:{close(){}}}),server=http.createServer(handler);
+ server.on('request',(req,res)=>{if(req.url.endsWith('/work'))res.once('close',disconnected);});server.listen(0,'127.0.0.1');await once(server,'listening');
+ const abort=new AbortController(),origin=`http://127.0.0.1:${server.address().port}`,headers={Authorization:'Bearer '+streamToken,'Content-Type':'application/json'},data=JSON.stringify({reservationId:sessionId});
+ const request=fetch(origin+'/internal/playback/work',{method:'POST',headers,body:data,signal:abort.signal}).catch(()=>null);
+ try{
+  await started;abort.abort();await closed;
+  const cleanup=await fetch(origin+'/internal/playback/release',{method:'POST',headers,body:data});assert.equal(cleanup.status,200);await cleanup.json();
+  commit();await request;await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(releases,[sessionId,sessionId]);assert.equal(leased,false);
+ }finally{commit();server.closeAllConnections();server.close();await handler.close();}
+});
+
 test('open media bodies do not consume the short API request admission counter',{timeout:15000},async t=>{
  // A deterministic counter regression with tiny synthetic bodies. No real
  // source, database, throughput benchmark or production service is involved.

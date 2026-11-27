@@ -1,6 +1,6 @@
 import {readFileSync,existsSync} from 'node:fs';
 import {randomUUID,createPrivateKey,createPublicKey,createHash} from 'node:crypto';
-import {SignJWT,jwtVerify,compactVerify,importPKCS8,importSPKI,decodeProtectedHeader} from 'jose';
+import {SignJWT,jwtVerify,compactVerify,decodeProtectedHeader} from 'jose';
 import {HttpError,isUUID} from './domain.mjs';
 
 export function createPlaybackGrants(config,now=()=>new Date()){
@@ -10,7 +10,10 @@ export function createPlaybackGrants(config,now=()=>new Date()){
   const publicPEM=config.playbackPublicKey||((config.playbackPublicKeyPath&&existsSync(config.playbackPublicKeyPath))?readFileSync(config.playbackPublicKeyPath,'utf8'):null);
   let privateKey,publicKey;
   const configured=!!privatePEM&&!!publicPEM;
-  if(configured){try{const privateObject=createPrivateKey(privatePEM),publicObject=createPublicKey(publicPEM);if(privateObject.asymmetricKeyType!=='rsa'||(privateObject.asymmetricKeyDetails?.modulusLength||0)<2048||!createPublicKey(privateObject).export({type:'spki',format:'der'}).equals(publicObject.export({type:'spki',format:'der'})))throw Error();}catch{throw Error('Invalid or mismatched playback signing keys.');}}
+  // Use the same eagerly parsed KeyObjects for validation and jose operations.
+  // Node accepts PKCS#1 as well as PKCS#8/SPKI; do not re-import the original PEM
+  // with a format-specific lazy importer after startup has accepted the pair.
+  if(configured){try{privateKey=createPrivateKey(privatePEM);publicKey=createPublicKey(publicPEM);if(privateKey.asymmetricKeyType!=='rsa'||(privateKey.asymmetricKeyDetails?.modulusLength||0)<2048||!createPublicKey(privateKey).export({type:'spki',format:'der'}).equals(publicKey.export({type:'spki',format:'der'})))throw Error();}catch{throw Error('Invalid or mismatched playback signing keys.');}}
   const keyId=config.playbackKeyId||(configured?createHash('sha256').update(createPublicKey(publicPEM).export({type:'spki',format:'der'})).digest('hex').slice(0,16):'unconfigured');
   const tolerance=config.playbackClockTolerance??30;
   if(!/^[\w-]{1,64}$/.test(keyId)||!Number.isInteger(tolerance)||tolerance<0||tolerance>30)throw Error('Invalid playback key ID or clock tolerance.');
@@ -19,9 +22,9 @@ export function createPlaybackGrants(config,now=()=>new Date()){
   for(const entry of previous){
     const expires=Date.parse(entry.acceptUntil),object=createPublicKey(entry.publicKey);
     if(!/^[\w-]{1,64}$/.test(entry.kid||'')||entry.kid===keyId||ring.has(entry.kid)||object.asymmetricKeyType!=='rsa'||(object.asymmetricKeyDetails?.modulusLength||0)<2048||!Number.isFinite(expires)||expires>+now()+86400000)throw Error('Invalid previous public key.');
-    ring.set(entry.kid,{expires,key:importSPKI(entry.publicKey,'RS256')});
+    ring.set(entry.kid,{expires,key:object});
   }
-  async function keys(){if(!configured)throw new HttpError(503,'Playback authorization is not configured.');privateKey??=importPKCS8(privatePEM,'RS256');publicKey??=importSPKI(publicPEM,'RS256');return{privateKey:await privateKey,publicKey:await publicKey};}
+  async function keys(){if(!configured)throw new HttpError(503,'Playback authorization is not configured.');return{privateKey,publicKey};}
   function claimsValid(c,{active=false}={}){
     const time=Math.floor(+now()/1000);
     if(!active&&Number.isInteger(c.exp)&&c.exp<=time)throw new HttpError(401,'Playback authorization has expired.','PLAYBACK_GRANT_EXPIRED');

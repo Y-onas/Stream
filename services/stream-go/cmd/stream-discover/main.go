@@ -74,13 +74,20 @@ func run() error {
 			return errors.New("use concurrency 1..8 and positive streaming timeouts")
 		}
 	}
-	cfg, err := config.LoadRuntime(*envPath)
+	cfg, err := config.Load(*envPath)
 	if err != nil {
 		return err
 	}
 	if *name == "" {
-		*name = cfg.Source
+		*name = os.Getenv("TELEGRAM_SOURCE")
 	}
+	// The selected override is the source to validate, even if the environment
+	// default is absent or invalid. USER_NAME remains unrelated support config.
+	cfg, err = config.ValidateRuntime(strconv.Itoa(cfg.APIID), cfg.APIHash, *name)
+	if err != nil {
+		return err
+	}
+	*name = cfg.Source
 	if *sessionPath == "" {
 		*sessionPath = os.Getenv("TELEGRAM_SESSION_PATH")
 		if *sessionPath == "" {

@@ -181,6 +181,8 @@ Before any migration, verify the existing target database/schema and take a prov
 
 The API does **not** migrate or seed on startup. After images/keys/env are ready, the operator runs one controlled command in **one API container** (Coolify Terminal) before enabling customer traffic:
 
+These historical migrations require an **offline maintenance window**. In particular, `202611020006_session_lifecycle` holds table locks across its schema changes, backfills and index builds until commit. For an upgrade, drain customer traffic and stop all Hub API/Go writers before running the migration in a one-off API container; restarting the regular API process merely to run the command defeats that isolation. Do not stop other VPS projects. A maintenance banner alone does not stop existing playback or background writes. Rehearse the pending migrations against a private production-sized database clone and record elapsed time before scheduling the window; no production-sized timing has been verified here. Preserve historical SQL/checksums. Future online migrations must use separate short schema steps, bounded backfills and concurrent index builds outside transaction blocks. See [PostgreSQL locking](https://www.postgresql.org/docs/17/explicit-locking.html) and [concurrent index builds](https://www.postgresql.org/docs/18/sql-createindex.html).
+
 ```bash
 # Read-only status first, using the project's locked Prisma 7.10.1 CLI/config.
 node node_modules/prisma/build/index.js migrate status --config services/api/prisma.config.ts

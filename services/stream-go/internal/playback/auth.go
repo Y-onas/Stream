@@ -167,7 +167,17 @@ func (v *Verifier) Open(parent context.Context, w http.ResponseWriter, value, vi
 	ctx, cancel := context.WithCancel(parent)
 	var finished atomic.Bool
 	var stopped sync.Once
-	stop := func() { stopped.Do(func() { finished.Store(true); cancel(); v.release(reservationID) }) }
+	watcherDone := make(chan struct{})
+	stop := func() {
+		stopped.Do(func() {
+			finished.Store(true)
+			cancel()
+			v.release(reservationID)
+			// ResponseController belongs to this handler. No watcher may touch
+			// its writer after the caller's deferred stop has returned.
+			<-watcherDone
+		})
+	}
 	updates := make(chan lease, 1)
 	failures := make(chan struct{}, 1)
 	if claims.Purpose == "playback" {
@@ -201,6 +211,7 @@ func (v *Verifier) Open(parent context.Context, w http.ResponseWriter, value, vi
 		}()
 	}
 	go func() {
+		defer close(watcherDone)
 		deadline := initial.Until
 		timer := time.NewTimer(time.Until(time.UnixMilli(initial.Until)))
 		defer timer.Stop()

@@ -21,7 +21,7 @@ export function createApplication({db,config,production=false,now=()=>new Date()
   const snapshot=()=>now();
   const playbackAuth=createPlayback({db,config,production,actor,viewer,settings,now,limit});
   const security=createSecurityEvents(db,now);
-  const operations=createOperations({db,now});
+  const operations=createOperations({db,config,now});
   let cleaning=false;
   const cleanupTimer=setInterval(()=>{if(cleaning)return;cleaning=true;void playbackAuth.capacity.cleanup().catch(()=>{}).finally(()=>{cleaning=false;});},60000);cleanupTimer.unref();
   let syncState=null,nextRatePruneAt=0;
@@ -51,7 +51,7 @@ export function createApplication({db,config,production=false,now=()=>new Date()
     if(csrf&&!safeEqual(req.headers['x-csrf-token'],session.csrfToken))throw new HttpError(403,'Please refresh your session and try again.');
     return session;
   }
-  async function newSession(res,user){const value=token(),csrfToken=token();await db.userSession.create({data:{userId:user.id,tokenHash:hash(value),csrfToken,expiresAt:new Date(+snapshot()+30*86400000)}});cookie(res,SESSION,value,{production});return {user:userDTO(user),csrfToken};}
+  async function newSession(user,database){const value=token(),csrfToken=token();await database.userSession.create({data:{userId:user.id,tokenHash:hash(value),csrfToken,expiresAt:new Date(+snapshot()+30*86400000)}});return {value,data:{user:userDTO(user),csrfToken}};}
   async function viewer(req,res,{create=false}={}){
     const raw=cookies(req)[VIEWER];let session;
     if(raw&&/^[a-f0-9]{64}$/.test(raw))session=await db.viewerSession.findUnique({where:{tokenHash:hash(raw)}});
@@ -152,6 +152,8 @@ export function createApplication({db,config,production=false,now=()=>new Date()
     return {registeredUsers:users,videos,qualifiedViews,viewsToday:Number(periods[0].today),viewsThisWeek:Number(periods[0].week),viewsThisMonth:Number(periods[0].month),activeMemberships,pendingRequests,timezone};
   }
   async function authorizeMedia(req,res,id){
+    // Catalogue cover JPEGs are intentionally public, including VIP covers.
+    // This only authorizes an image; video bytes use playback.stream and grants.
     const platform=await settings.get();if(platform.maintenanceMode)throw new HttpError(503,platform.maintenanceMessage,'MAINTENANCE');
     if(!isUUID(id))throw new HttpError(404,'Video not found.');
     const video=await db.video.findFirst({where:{publicId:id,...publicVideoWhere}});if(!video)throw new HttpError(404,'Video not found.');
@@ -214,8 +216,18 @@ export function createApplication({db,config,production=false,now=()=>new Date()
       limit(req,path,path.endsWith('register')?8:20,15*60000);const data=await body(req),input=username(data.username),pass=password(data.password);let user;
       if(path.endsWith('register')){if(!(await settings.get()).registrationOpen)throw new HttpError(403,'New account registration is currently closed.');try{user=await db.user.create({data:{...input,passwordHash:await hashPassword(pass)}});}catch(error){if(error.code==='P2002')throw new HttpError(409,'This username is unavailable.','USERNAME_UNAVAILABLE');throw error;}}
       else{user=await db.user.findUnique({where:{usernameCanonical:input.usernameCanonical}});const valid=await verifyPassword(pass,user?.passwordHash||await hashPassword('Unregistered-account-timing-placeholder'));if(!user||!valid)throw new HttpError(401,'Username or password is incorrect.');if(user.status!=='ACTIVE')throw new HttpError(403,'This account is suspended. Contact support.');}
-      const previous=cookies(req)[SESSION];if(previous)await db.userSession.deleteMany({where:{tokenHash:hash(previous)}});
-      send(res,path.endsWith('register')?201:200,await newSession(res,user));return true;
+      const previous=cookies(req)[SESSION];
+      const issued=await db.$transaction(async tx=>{
+        // Password changes take this same lock. An old-password login may not
+        // create a session after the password-change transaction revoked them.
+        await tx.$queryRaw`SELECT id FROM ${table('hh_users')} WHERE id=${user.id}::uuid FOR UPDATE`;
+        const current=await tx.user.findUnique({where:{id:user.id}});
+        if(!current||current.passwordHash!==user.passwordHash)throw new HttpError(401,'Username or password is incorrect.');
+        if(current.status!=='ACTIVE')throw new HttpError(403,'This account is suspended. Contact support.');
+        if(previous)await tx.userSession.deleteMany({where:{tokenHash:hash(previous)}});
+        return newSession(current,tx);
+      },{timeout:15000});
+      cookie(res,SESSION,issued.value,{production});send(res,path.endsWith('register')?201:200,issued.data);return true;
     }
     if(['/api/auth/logout','/api/auth/logout-everywhere','/api/auth/password'].includes(path)&&method==='POST'){
       limit(req,'account-security',8,60000);const session=await actor(req,res,{required:true,csrf:true});let newHash;

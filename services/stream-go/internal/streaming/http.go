@@ -188,7 +188,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.abort("request canceled or timed out")
 			return
 		}
-		if err := controller.SetWriteDeadline(time.Now().Add(h.opts.WriteTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		if err := controller.SetWriteDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
 			h.abort("write deadline failed")
 			return
 		}
@@ -210,6 +210,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		// Intentional pacing is not a slow client write. Arm the socket deadline
+		// only when bytes are ready, and clear it before waiting for Telegram.
+		if err := controller.SetWriteDeadline(time.Now().Add(h.opts.WriteTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			h.abort("write deadline failed")
+			return
+		}
 		n, err := w.Write(writePart)
 		if err != nil || n != len(writePart) {
 			h.abort("client write failed")
@@ -222,6 +228,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := controller.Flush(); err != nil {
 			h.abort("client disconnected")
+			return
+		}
+		if err := controller.SetWriteDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			h.abort("write deadline failed")
 			return
 		}
 		part = part[n:]

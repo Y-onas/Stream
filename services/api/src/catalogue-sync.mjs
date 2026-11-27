@@ -24,7 +24,20 @@ export function startCatalogueSync({db,streamOrigin,streamToken,grantFor,jobLeas
     if(inspecting||closed)return;inspecting=true;
     try{
       const rows=await db.video.findMany({where:{available:true,durationSeconds:null,OR:[{inspectionAttemptedAt:null},{inspectionAttemptedAt:{lt:new Date(Date.now()-30*60000)}}]},orderBy:{uploadedAt:'desc'},take:10});
-      for(const row of rows){if(closed)break;await db.video.update({where:{id:row.id},data:{inspectionAttemptedAt:new Date()}});try{const seconds=await inspect({...row,sizeBytes:Number(row.sizeBytes)},{streamOrigin,streamToken,grantFor,jobLease,fetcher,signal:abort.signal});if(!closed){await db.video.update({where:{id:row.id},data:{durationSeconds:seconds,durationSource:'ffmpeg'}});console.log(JSON.stringify({event:'video_duration_measured',video:row.id,seconds}));}}catch{if(!closed)console.log(JSON.stringify({event:'video_duration_unavailable',video:row.id}));}}
+      for(const row of rows){
+        if(closed)break;
+        const attemptedAt=new Date();await db.video.update({where:{id:row.id},data:{inspectionAttemptedAt:attemptedAt}});
+        try{const seconds=await inspect({...row,sizeBytes:Number(row.sizeBytes)},{streamOrigin,streamToken,grantFor,jobLease,fetcher,signal:abort.signal});if(!closed){await db.video.update({where:{id:row.id},data:{durationSeconds:seconds,durationSource:'ffmpeg'}});console.log(JSON.stringify({event:'video_duration_measured',video:row.id,seconds}));}}
+        catch(error){
+          if(error.code==='BACKGROUND_BUSY'){
+            // Lease contention is not an inspection attempt. Restore only this
+            // claim, preserving any intervening file update or newer inspection.
+            await db.video.updateMany({where:{id:row.id,inspectionAttemptedAt:attemptedAt},data:{inspectionAttemptedAt:row.inspectionAttemptedAt||null}});
+            break;
+          }
+          if(!closed)console.log(JSON.stringify({event:'video_duration_unavailable',video:row.id}));
+        }
+      }
     }finally{inspecting=false;}
   }
   async function cycle(){
